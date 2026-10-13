@@ -1,0 +1,46 @@
+# ───────────── 비밀정보 / 운영 데이터 (절대 커밋 금지) ─────────────
+# 실제 설정과 키는 저장소 밖 %CENTRAL_HOME% 에만 둔다. (docs/PLAN.md 11장)
+.env
+.env.*
+!.env.example
+*.toml
+!pyproject.toml
+!.gitleaks.toml
+!*.example.toml
+secrets/
+state/
+data/
+logs/
+backups/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.parquet
+*.pem
+*.key
+*.p12
+# KIS 공식 샘플 방식의 토큰 캐시 파일 (KIS20261013 등)
+KIS2[0-9][0-9][0-9][0-9][0-9][0-9][0-9]
+kis_devlp.yaml
+
+# ───────────── Python ─────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ───────────── 기타 ─────────────
+.vscode/
+.idea/
+*.log
+Thumbs.db
+.DS_Store

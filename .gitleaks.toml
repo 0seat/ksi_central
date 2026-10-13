@@ -1,0 +1,29 @@
+title = "central-securities gitleaks config"
+
+# gitleaks 기본 규칙 + KIS 전용 규칙
+[extend]
+useDefault = true
+
+[[rules]]
+id = "kis-app-credential"
+description = "KIS 앱키/앱시크릿 리터럴"
+regex = '''(?i)(app_?key|app_?secret|appsecret|secret_?key)["']?\s*[:=]\s*["']([A-Za-z0-9+/=_\-]{16,})["']'''
+secretGroup = 2
+keywords = ["appkey", "app_key", "appsecret", "app_secret", "secretkey", "secret_key"]
+
+[[rules]]
+id = "kis-account-number"
+description = "KIS 계좌번호 리터럴 (앞 8자리 또는 8-2 형식)"
+regex = '''(?i)(account_no|cano|acct[a-z_]*)["']?\s*[:=]\s*["']?(\d{8}(?:-?\d{2})?)\b'''
+secretGroup = 2
+keywords = ["account_no", "cano", "acct"]
+
+[[rules]]
+id = "kis-access-token"
+description = "KIS 접근토큰 (JWT)"
+regex = '''eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'''
+keywords = ["eyj"]
+
+[allowlist]
+description = "테스트용 더미 값"
+regexes = ['''(?i)^(dummy|test|fake|example|sample)''']

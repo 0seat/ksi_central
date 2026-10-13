@@ -1,0 +1,33 @@
+# 중앙증권 일반 설정 (비밀정보 아님)
+# 실제 파일 위치: %CENTRAL_HOME%\config\central.toml
+# `python -m tools.init_home` 실행 시 이 예시가 복사된다.
+
+[server]
+# Tailscale IP(100.x.x.x)를 추가한다. 0.0.0.0 은 사용 금지.
+hosts = ["127.0.0.1"]
+port = 8700
+
+[logging]
+level = "INFO"
+retention_days = 30
+
+# 실계좌 profile. 키 이름(alias)은 secrets.toml 의 [accounts.<alias>] 와 일치해야 한다.
+# 모의/실전은 env 값만 다르고 코드 경로는 같다.
+
+[accounts.paper]
+env = "paper"
+markets = ["KR"]                # KIS 모의투자가 해외를 지원하면 "US" 추가
+kr_routes = ["KRX"]
+kr_default_route = "KRX"
+integrated_margin = false
+rate_limit_per_sec = 2
+trading_enabled = false
+
+[accounts.real]
+env = "real"
+markets = ["KR", "US"]
+kr_routes = ["KRX", "NXT", "SOR"]
+kr_default_route = "SOR"
+integrated_margin = true
+rate_limit_per_sec = 18
+trading_enabled = false
