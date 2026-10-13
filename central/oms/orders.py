@@ -80,11 +80,14 @@ class OrderView:
     status: str
     reject_reason: str | None
     orig_order_id: int | None
+    broker_order_no: str | None
+    created_at: datetime
 
 
 def _view(o: OrderRow) -> OrderView:
     return OrderView(o.id, o.sub_account_id, o.client_order_id, o.instrument_id, o.side, o.order_type, o.route,
-                     o.price, o.qty, o.filled_qty, o.avg_fill_price, o.status, o.reject_reason, o.orig_order_id)
+                     o.price, o.qty, o.filled_qty, o.avg_fill_price, o.status, o.reject_reason, o.orig_order_id,
+                     o.broker_order_no, o.created_at)
 
 
 @dataclass(frozen=True)
@@ -146,7 +149,7 @@ class OrderService:
                     raise OmsError("BROKER_UNAVAILABLE", "시장가 홀드 계산에 필요한 상한가 없음")
                 est_price = quote.upper_limit
             assert est_price is not None
-            fx = await broker.fx_rate() if instrument.currency == "USD" else None
+            fx = await self._fx_if_needed(broker_alias, sub_account_id, instrument)
 
             now = self.clock()
             with tx(self.db, self.bus) as (s, ev):
@@ -192,12 +195,12 @@ class OrderService:
                 prev_status = order.status
                 order.status, order.updated_at = "CANCEL_PENDING", self.clock()
                 record_event(s, ev, "ORDER", sub_account_id, self._payload(order), order.updated_at)
-                no, org = order.broker_order_no, order.broker_org_no or ""
+                no, org, route = order.broker_order_no, order.broker_org_no or "", order.route
                 remaining = order.qty - order.filled_qty
                 instrument = self._instrument(order.instrument_id)
             try:
                 assert no is not None
-                await self.brokers[broker_alias].cancel(no, org, instrument, remaining)
+                await self.brokers[broker_alias].cancel(no, org, instrument, remaining, route)
             except BrokerReject as e:
                 with tx(self.db, self.bus) as (s, ev):
                     order = s.get(OrderRow, order_id)
@@ -224,14 +227,14 @@ class OrderService:
                 client_id, n_amend = old.client_order_id, self._amend_count(s, old)
 
             broker = self.brokers[broker_alias]
-            fx = await broker.fx_rate() if instrument.currency == "USD" else None
+            fx = await self._fx_if_needed(broker_alias, sub_account_id, instrument)
             now = self.clock()
             with self.db.session() as s:  # 사전 점검만 (기존 주문 홀드는 해제된다고 보고 계산)
                 self._hold_plan(s, broker_alias, sub_account_id, instrument, side, new_qty, price, fx, now, exclude_order_id=order_id)
 
             assert no is not None
             try:
-                ack = await broker.amend(no, org, instrument, price, new_qty)
+                ack = await broker.amend(no, org, instrument, price, new_qty, route)
             except BrokerReject as e:
                 raise OmsError("BROKER_REJECTED", f"[{e.code}] {e.message}") from None
 
@@ -268,14 +271,49 @@ class OrderService:
                 record_event(s, ev, "ORDER", o.sub_account_id, self._payload(o), now)
             return len(rows)
 
+    # ───────────── 동기화/복구 지원 (central/oms/sync.py 에서 사용) ─────────────
+    def orders_in(self, broker_alias: str, market: str, statuses: tuple[str, ...]) -> list[OrderView]:
+        with self.db.session() as s:
+            q = select(OrderRow).where(OrderRow.broker_account_id == broker_alias, OrderRow.market == market,
+                                       OrderRow.status.in_(statuses)).order_by(OrderRow.id)
+            return [_view(o) for o in s.scalars(q)]
+
+    def known_broker_order_nos(self, broker_alias: str) -> set[str]:
+        with self.db.session() as s:
+            return set(s.scalars(select(OrderRow.broker_order_no).where(
+                OrderRow.broker_account_id == broker_alias, OrderRow.broker_order_no.is_not(None))))
+
+    async def resolve_unknown(self, broker_alias: str, order_id: int, broker_order_no: str) -> None:
+        """UNKNOWN 주문이 브로커에 접수된 것으로 확인됨 → 주문번호 연결 후 ACCEPTED."""
+        async with self._locks[broker_alias]:
+            with tx(self.db, self.bus) as (s, ev):
+                o = s.get(OrderRow, order_id)
+                if o is None or o.status != "UNKNOWN":
+                    return
+                o.broker_order_no, o.status, o.reject_reason, o.updated_at = broker_order_no, "ACCEPTED", None, self.clock()
+                record_event(s, ev, "ORDER", o.sub_account_id, self._payload(o), o.updated_at)
+
+    async def fail_unknown(self, broker_alias: str, order_id: int, reason: str) -> None:
+        """UNKNOWN 주문이 브로커에 없음이 확인됨 → SUBMIT_FAILED, 홀드 해제."""
+        async with self._locks[broker_alias]:
+            with tx(self.db, self.bus) as (s, ev):
+                o = s.get(OrderRow, order_id)
+                if o is None or o.status != "UNKNOWN":
+                    return
+                ledger.release_holds(s, o.id)
+                o.status, o.reject_reason, o.updated_at = "SUBMIT_FAILED", reason[:200], self.clock()
+                record_event(s, ev, "ORDER", o.sub_account_id, self._payload(o), o.updated_at)
+
     # ───────────── 브로커 이벤트 ─────────────
     async def on_broker_event(self, broker_alias: str, event: BrokerEvent) -> None:
         async with self._locks[broker_alias]:
             if isinstance(event, BrokerFill):
                 fx = None
-                inst = self.instruments.get(event.instrument_id)
-                if inst is not None and inst.currency == "USD":
-                    fx = await self.brokers[broker_alias].fx_rate()
+                if event.instrument_id.startswith("US:"):
+                    try:
+                        fx = await self.brokers[broker_alias].fx_rate()
+                    except Exception as e:  # 환율은 fx_mode=broker 자동환전 기록에만 필요
+                        log.warning("환율 조회 실패, 홀드 환율로 대체: %s", e)
                 self._apply_fill(broker_alias, event, fx)
             elif isinstance(event, BrokerCancelled):
                 self._apply_cancel(broker_alias, event)
@@ -292,7 +330,7 @@ class OrderService:
             order = self._order_by_broker_no(s, broker_alias, f.broker_order_no)
             if order is None:
                 sub_id = self._unallocated_id(s, broker_alias)
-                instrument = self._instrument(f.instrument_id)
+                instrument = self.instruments.ensure(f.instrument_id)
                 self._book_fill(s, broker_alias, sub_id, None, instrument, f, fx, now)
                 record_event(s, ev, "UNMATCHED_FILL", sub_id, {
                     "broker_order_no": f.broker_order_no, "instrument_id": f.instrument_id,
@@ -345,7 +383,7 @@ class OrderService:
                 usable = ledger.cash_balance(s, sub_id, "USD") - other_holds
                 if usable < cost:
                     short = cost - max(usable, ZERO)
-                    rate = fx or ZERO
+                    rate = fx or self._hold_fx_rate(s, order_id)
                     krw = q_cash(short * rate, "KRW")
                     ledger.post(s, sub_id, "KRW", "FX_AUTO", -krw, at=now, ref_type="order", ref_id=order_id,
                                 fx_rate=rate, provisional=True, memo="통합증거금 자동환전(잠정)")
@@ -470,6 +508,24 @@ class OrderService:
                 items.insert(0, ("cash", "USD", None, usd_part, None))
             return _HoldPlan(items)
         raise OmsError("INSUFFICIENT_CASH", f"주문가능 {cur} 부족 (필요 {need}, 가능 {available})")
+
+    async def _fx_if_needed(self, broker_alias: str, sub_id: int, instrument: Instrument) -> Decimal | None:
+        if instrument.currency != "USD":
+            return None
+        with self.db.session() as s:
+            if not self._auto_fx(s, broker_alias, sub_id):
+                return None
+        try:
+            return await self.brokers[broker_alias].fx_rate()
+        except BrokerUnavailable as e:
+            raise OmsError("BROKER_UNAVAILABLE", f"환율 조회 실패: {e}") from None
+
+    def _hold_fx_rate(self, s: Session, order_id: int | None) -> Decimal:
+        """체결 시 환율 조회가 실패하면 주문 당시 홀드 환율에서 버퍼를 뺀 값을 쓴다."""
+        if order_id is not None:
+            for h in s.scalars(select(HoldRow).where(HoldRow.order_id == order_id, HoldRow.fx_rate.is_not(None))):
+                return h.fx_rate / (1 + self.fx_buffer)  # type: ignore[operator]
+        raise OmsError("BROKER_UNAVAILABLE", "자동환전 기록에 필요한 환율 없음")
 
     def _auto_fx(self, s: Session, broker_alias: str, sub_id: int) -> bool:
         """USD 부족분을 KRW 로 충당(통합증거금 자동환전)할지: 실계좌가 통합증거금이고 서브계좌가 fx_mode=broker 일 때만."""

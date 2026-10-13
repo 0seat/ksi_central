@@ -69,3 +69,15 @@ class InstrumentRegistry:
 
     def get(self, instrument_id: str) -> Instrument | None:
         return self._items.get(instrument_id)
+
+    def ensure(self, instrument_id: str, exchange: str | None = None) -> Instrument:
+        """마스터에 없는 종목(HTS 수동매매 등)을 최소 정보로 등록해 반환."""
+        found = self._items.get(instrument_id)
+        if found is not None:
+            return found
+        market, _, code = instrument_id.partition(":")
+        if market not in MARKET_CURRENCY or not code:
+            raise ValueError(f"잘못된 종목 식별자: {instrument_id}")
+        inst = Instrument(instrument_id, market, code, exchange or ("KRX" if market == "KR" else "NASD"))  # type: ignore[arg-type]
+        self.add(inst)
+        return inst

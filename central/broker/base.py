@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Awaitable, Callable, Literal
 
@@ -83,6 +83,35 @@ BrokerEvent = BrokerFill | BrokerCancelled | BrokerOrderRejected
 EventHandler = Callable[[BrokerEvent], Awaitable[None]]
 
 
+@dataclass(frozen=True)
+class BrokerOrderStatus:
+    """브로커가 알고 있는 주문 상태 (당일 주문체결 조회 결과). 복구와 동기화에 쓴다."""
+    broker_order_no: str
+    instrument_id: str
+    side: Side
+    qty: int
+    price: Decimal | None
+    filled_qty: int
+    avg_fill_price: Decimal | None
+    open_qty: int                 # 미체결 잔량
+    orig_order_no: str | None     # 정정/취소 주문이면 원주문번호
+    ordered_at: str               # HHMMSS (KST)
+
+    @property
+    def closed_unfilled(self) -> bool:
+        """잔량 없이 종료됐는데 전량 체결이 아님 → 취소/거부로 종료된 부분이 있음."""
+        return self.open_qty == 0 and self.filled_qty < self.qty
+
+
+@dataclass(frozen=True)
+class AccountSnapshot:
+    """실계좌 잔고 (대사용). cash 는 매매일 기준(미결제 반영) 통화별 현금, 조회 불가면 비움."""
+    market: str
+    cash: dict[str, Decimal]
+    positions: dict[str, tuple[int, Decimal]]   # instrument_id -> (수량, 평균단가)
+    fx_rate: Decimal | None = None
+
+
 class Broker(ABC):
     account_id: str
 
@@ -100,12 +129,21 @@ class Broker(ABC):
     @abstractmethod
     async def submit(self, req: BrokerOrderRequest) -> BrokerOrderAck: ...
 
+    async def start(self) -> None:
+        """실시간 체결통보 수신 등 백그라운드 작업 시작 (필요한 브로커만 구현)."""
+
+    async def stop(self) -> None:
+        pass
+
     @abstractmethod
-    async def cancel(self, broker_order_no: str, broker_org_no: str, instrument: Instrument, qty: int) -> None: ...
+    async def cancel(
+        self, broker_order_no: str, broker_org_no: str, instrument: Instrument, qty: int, route: str | None = None
+    ) -> None: ...
 
     @abstractmethod
     async def amend(
-        self, broker_order_no: str, broker_org_no: str, instrument: Instrument, price: Decimal, qty: int
+        self, broker_order_no: str, broker_org_no: str, instrument: Instrument, price: Decimal, qty: int,
+        route: str | None = None,
     ) -> BrokerOrderAck: ...
 
     @abstractmethod
@@ -113,3 +151,9 @@ class Broker(ABC):
 
     @abstractmethod
     async def fx_rate(self, pair: str = "USDKRW") -> Decimal: ...
+
+    @abstractmethod
+    async def order_statuses(self, market: str, day: date) -> list[BrokerOrderStatus]: ...
+
+    @abstractmethod
+    async def snapshot(self, market: str) -> AccountSnapshot: ...

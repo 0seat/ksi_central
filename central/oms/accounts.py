@@ -17,7 +17,7 @@ from central.core.money import CURRENCIES, ZERO, q_cash
 from central.oms import ledger
 from central.oms.errors import OmsError
 from central.storage.db import Database
-from central.storage.models import BrokerAccountRow, EventRow, PositionRow, SubAccountRow
+from central.storage.models import BrokerAccountRow, EventRow, LedgerRow, PositionRow, SubAccountRow
 
 UNALLOCATED = "unallocated"
 SUB_TYPES = ("strategy", "app")
@@ -241,6 +241,28 @@ class AccountService:
             now = self.clock()
             sp.updated_at = dp.updated_at = now
             record_event(s, ev, "POSITION_TRANSFER", from_id, {"to": to_id, "instrument_id": instrument_id, "qty": qty}, now)
+
+    def import_position(self, sub_account_id: int, instrument_id: str, currency: str, qty: int, avg_price: Decimal) -> None:
+        """초기 동기화: 실계좌에 이미 있던 보유종목을 장부에 들여온다 (체결 기록 없이)."""
+        with tx(self.db, self.bus) as (s, ev):
+            self._get(s, sub_account_id)
+            pos = ledger.position(s, sub_account_id, instrument_id)
+            if pos is None:
+                pos = PositionRow(sub_account_id=sub_account_id, instrument_id=instrument_id, currency=currency,
+                                  qty=0, avg_price=ZERO, realized_pnl=ZERO)
+                s.add(pos)
+            total = pos.qty + qty
+            pos.avg_price = (pos.avg_price * pos.qty + avg_price * qty) / total if total else ZERO
+            pos.qty = total
+            pos.updated_at = self.clock()
+            record_event(s, ev, "POSITION_IMPORT", sub_account_id,
+                         {"instrument_id": instrument_id, "qty": qty, "avg_price": str(avg_price)}, self.clock())
+
+    def is_empty(self, sub_account_id: int) -> bool:
+        with self.db.session() as s:
+            has_cash = s.scalar(select(LedgerRow.id).where(LedgerRow.sub_account_id == sub_account_id).limit(1))
+            has_pos = s.scalar(select(PositionRow.sub_account_id).where(PositionRow.sub_account_id == sub_account_id).limit(1))
+            return has_cash is None and has_pos is None
 
     # ───────────── 내부 ─────────────
     @staticmethod

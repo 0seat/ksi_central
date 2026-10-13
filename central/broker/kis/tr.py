@@ -55,6 +55,7 @@ KR_INTGR_MARGIN = Tr(f"{_DS}/trading/intgr-margin", "GET", "TTTC0869R", None)
 KR_ORDER_BUY = Tr(f"{_DS}/trading/order-cash", "POST", "TTTC0012U", "VTTC0012U")
 KR_ORDER_SELL = Tr(f"{_DS}/trading/order-cash", "POST", "TTTC0011U", "VTTC0011U")
 KR_ORDER_RVSECNCL = Tr(f"{_DS}/trading/order-rvsecncl", "POST", "TTTC0013U", "VTTC0013U")
+KR_DAILY_CCLD = Tr(f"{_DS}/trading/inquire-daily-ccld", "GET", "TTTC0081R", "VTTC0081R")  # 3개월 이내
 
 # ───────────── 해외주식 (미국) ─────────────
 _OP = "/uapi/overseas-price/v1"
@@ -69,6 +70,7 @@ US_FOREIGN_MARGIN = Tr(f"{_OS}/trading/foreign-margin", "GET", "TTTC2101R", None
 US_ORDER_BUY = Tr(f"{_OS}/trading/order", "POST", "TTTT1002U", "VTTT1002U")
 US_ORDER_SELL = Tr(f"{_OS}/trading/order", "POST", "TTTT1006U", "VTTT1006U")
 US_ORDER_RVSECNCL = Tr(f"{_OS}/trading/order-rvsecncl", "POST", "TTTT1004U", "VTTT1004U")
+US_CCNL = Tr(f"{_OS}/trading/inquire-ccnl", "GET", "TTTS3035R", "VTTS3035R")
 
 # ───────────── 실시간 (WebSocket) ─────────────
 # 시세 TR은 모의/실전 동일, 체결통보만 다르다. 체결통보 tr_key 는 HTS ID.

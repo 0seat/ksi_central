@@ -61,6 +61,7 @@ class KisWebSocket:
     _ciphers: dict[str, _Cipher] = field(default_factory=dict)
     _subscriptions: set[tuple[str, str]] = field(default_factory=set)
     queue: asyncio.Queue[RealtimeMessage] = field(default_factory=asyncio.Queue)
+    closed: asyncio.Event = field(default_factory=asyncio.Event)
     pingpong_count: int = 0
 
     async def connect(self) -> None:
@@ -128,7 +129,10 @@ class KisWebSocket:
                     await self._on_system(raw)
         except websockets.ConnectionClosed as e:
             log.warning("[%s] WS 연결 종료: %s", self.auth.account.alias, e)
+        except Exception:
+            log.exception("[%s] WS 수신 처리 오류", self.auth.account.alias)
         finally:
+            self.closed.set()
             for fut in self._pending.values():
                 if not fut.done():
                     fut.set_exception(KisWsError("WS 연결 종료"))

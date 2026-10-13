@@ -12,13 +12,15 @@ from __future__ import annotations
 import itertools
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Callable
 
 from central.broker.base import (
+    AccountSnapshot,
     Broker,
     BrokerCancelled,
+    BrokerOrderStatus,
     BrokerEvent,
     BrokerFill,
     BrokerOrderAck,
@@ -41,6 +43,10 @@ class SimOrder:
     price: Decimal | None
     remaining: int
     open: bool = True
+    filled: int = 0
+    fill_value: Decimal = ZERO
+    orig: str | None = None
+    ordered_at: str = ""
 
 
 class SimBroker(Broker):
@@ -58,12 +64,14 @@ class SimBroker(Broker):
         self.clock = clock
         self.cash: dict[str, Decimal] = defaultdict(lambda: ZERO)
         self.positions: dict[str, int] = defaultdict(int)
+        self.avg: dict[str, Decimal] = defaultdict(lambda: ZERO)
         self.quotes: dict[str, Quote] = {}
         self.fx: Decimal = Decimal("1400")
         self.orders: dict[str, SimOrder] = {}
         self.pending_events: list[BrokerEvent] = []
         self.reject_next: BrokerReject | None = None
-        self.fail_next: bool = False
+        self.fail_next: bool = False          # 접수 전 실패 (주문 없음)
+        self.drop_ack_next: bool = False      # 접수는 됐는데 응답이 유실됨
         self._seq = itertools.count(1)
         self._fill_seq = itertools.count(1)
 
@@ -90,10 +98,17 @@ class SimBroker(Broker):
         qty = min(qty, o.remaining)
         o.remaining -= qty
         o.open = o.remaining > 0
+        o.filled += qty
+        o.fill_value += price * qty
         self._settle(o.req.instrument, o.req.side, qty, price, venue)
         self.pending_events.append(
             BrokerFill(no, f"F{next(self._fill_seq):06d}", o.req.instrument.id, o.req.side, qty, price, venue, self.clock())
         )
+
+    def fill_silently(self, no: str, qty: int, price: Decimal) -> None:
+        """체결은 됐지만 체결통보가 유실된 상황 (동기화 테스트용)."""
+        self.fill(no, qty, price)
+        self.pending_events.pop()
 
     def external_fill(self, instrument: Instrument, side: str, qty: int, price: Decimal) -> None:
         """중앙증권을 거치지 않은 체결 (HTS/MTS 수동매매)."""
@@ -118,6 +133,8 @@ class SimBroker(Broker):
                 self.cash["KRW"] -= q_cash(short * self.fx, "KRW")
                 self.cash["USD"] += short
             self.cash[cur] -= cost
+            held = self.positions[instrument.id]
+            self.avg[instrument.id] = (self.avg[instrument.id] * held + price * qty) / (held + qty)
             self.positions[instrument.id] += qty
         else:
             self.cash[cur] += notional - fee - tax
@@ -132,10 +149,15 @@ class SimBroker(Broker):
             err, self.reject_next = self.reject_next, None
             raise err
         no = f"S{next(self._seq):07d}"
-        self.orders[no] = SimOrder(no, req, req.price, req.qty)
+        self.orders[no] = SimOrder(no, req, req.price, req.qty, ordered_at=self.clock().strftime("%H%M%S"))
+        if self.drop_ack_next:
+            self.drop_ack_next = False
+            raise BrokerUnavailable("sim: 접수됐지만 응답 유실")
         return BrokerOrderAck(no, "00950")
 
-    async def cancel(self, broker_order_no: str, broker_org_no: str, instrument: Instrument, qty: int) -> None:
+    async def cancel(
+        self, broker_order_no: str, broker_org_no: str, instrument: Instrument, qty: int, route: str | None = None
+    ) -> None:
         o = self.orders.get(broker_order_no)
         if o is None or not o.open:
             raise BrokerReject("SIM_NOT_OPEN", "취소 가능한 주문 아님")
@@ -143,7 +165,8 @@ class SimBroker(Broker):
         self.pending_events.append(BrokerCancelled(broker_order_no, canceled))
 
     async def amend(
-        self, broker_order_no: str, broker_org_no: str, instrument: Instrument, price: Decimal, qty: int
+        self, broker_order_no: str, broker_org_no: str, instrument: Instrument, price: Decimal, qty: int,
+        route: str | None = None,
     ) -> BrokerOrderAck:
         o = self.orders.get(broker_order_no)
         if o is None or not o.open:
@@ -151,8 +174,24 @@ class SimBroker(Broker):
         o.remaining, o.open = 0, False
         no = f"S{next(self._seq):07d}"
         req = BrokerOrderRequest(o.req.instrument, o.req.side, "limit", qty, price, o.req.route)
-        self.orders[no] = SimOrder(no, req, price, qty)
+        self.orders[no] = SimOrder(no, req, price, qty, orig=broker_order_no, ordered_at=self.clock().strftime("%H%M%S"))
         return BrokerOrderAck(no, broker_org_no)
+
+    async def order_statuses(self, market: str, day: date) -> list[BrokerOrderStatus]:
+        return [
+            BrokerOrderStatus(
+                o.no, o.req.instrument.id, o.req.side, o.req.qty, o.price, o.filled,
+                (o.fill_value / o.filled) if o.filled else None, o.remaining, o.orig, o.ordered_at,
+            )
+            for o in self.orders.values() if o.req.instrument.market == market
+        ]
+
+    async def snapshot(self, market: str) -> AccountSnapshot:
+        cur = "KRW" if market == "KR" else "USD"
+        positions = {
+            k: (v, self.avg[k]) for k, v in self.positions.items() if v and k.startswith(f"{market}:")
+        }
+        return AccountSnapshot(market, {cur: self.cash[cur]}, positions, self.fx)
 
     async def quote(self, instrument: Instrument) -> Quote:
         q = self.quotes.get(instrument.id)

@@ -35,7 +35,8 @@ class RiskLimits:
 @dataclass
 class RiskEngine:
     db: Database
-    halted: set[tuple[str, str]] = field(default_factory=set)  # ("all",""), ("broker",id), ("sub",id), ("market",KR)
+    # ("all",""), ("broker",id), ("broker_market","id:KR"), ("sub",id), ("market",KR)
+    halted: set[tuple[str, str]] = field(default_factory=set)
 
     # ───────────── 설정 ─────────────
     def set_limits(self, sub_account_id: int, market: str, limits: RiskLimits) -> None:
@@ -58,7 +59,9 @@ class RiskEngine:
         self.halted.discard((scope, id_))
 
     def is_halted(self, broker_account_id: str, sub_account_id: int, market: str) -> bool:
-        return bool({("all", ""), ("broker", broker_account_id), ("sub", str(sub_account_id)), ("market", market)} & self.halted)
+        scopes = {("all", ""), ("broker", broker_account_id), ("broker_market", f"{broker_account_id}:{market}"),
+                  ("sub", str(sub_account_id)), ("market", market)}
+        return bool(scopes & self.halted)
 
     # ───────────── 점검 ─────────────
     def check(

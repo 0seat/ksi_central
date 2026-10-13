@@ -156,6 +156,16 @@ class FeeScheduleRow(Base):
     effective_from: Mapped[date] = mapped_column(Date)
 
 
+class ReconciliationRow(Base):
+    __tablename__ = "reconciliations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    broker_account_id: Mapped[str] = mapped_column(ForeignKey("broker_accounts.id"))
+    market: Mapped[str] = mapped_column(String(4))
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
+    ok: Mapped[bool] = mapped_column(Boolean)
+    diffs: Mapped[list[str]] = mapped_column(JSON)
+
+
 class EventRow(Base):
     __tablename__ = "events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
