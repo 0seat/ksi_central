@@ -293,20 +293,32 @@ KIS 체결통보 ─────────────▶ ⑥ 주문번호로 
 | 결제 | T+2 | T+1 |
 | 거래비용 | 수수료 + 거래세(매도) | 수수료 + SEC fee 등(매도) |
 
-### 6.6 주문 상태머신
+### 6.6 주문 상태머신 (M2 구현 기준)
 ```
-NEW ─▶ REJECTED
- ▼
-SUBMITTING ─▶ SUBMIT_FAILED
- │         └▶ UNKNOWN (타임아웃 → KIS 주문내역 조회로 확정)
+(검증/리스크/홀드 실패 → 주문 생성 안 됨, OmsError 반환)
+
+SUBMITTING ─▶ REJECTED        브로커 거부 (홀드 해제)
+ │         └▶ UNKNOWN         타임아웃/연결 오류. 홀드 유지, M3 복구 루틴이 KIS 주문내역으로 확정
  ▼
 ACCEPTED ─▶ PARTIALLY_FILLED ─▶ FILLED
  └──────┬─────────┘
-        ▼
- CANCEL_PENDING ─▶ CANCELED
- AMEND_PENDING  ─▶ (새 주문번호로 재매핑)
- EXPIRED        (장 종료 후 미체결 잔량 소멸)
+        ├▶ CANCEL_PENDING ─▶ CANCELED   (취소 확인 통보 시 잔여 홀드 해제)
+        ├▶ REPLACED                     정정: 기존 주문 종료, 새 주문(orig_order_id 연결, client_order_id "#A1")
+        └▶ EXPIRED                      장 종료 후 미체결 잔량 소멸
 ```
+- 정정은 KIS 처럼 새 주문번호를 받는 방식이라 별도 AMEND_PENDING 상태를 두지 않고, 락 안에서 기존 주문 REPLACED 와 새 주문 ACCEPTED 를 한 번에 기록한다.
+
+### 6.6.1 금액 처리 규칙 (M2 구현)
+| 항목 | 규칙 |
+|---|---|
+| 저장 | Decimal 을 문자열로 저장 (SQLite 실수 오차 방지) |
+| 체결대금 | KRW 원 단위, USD 센트 단위 반올림 |
+| 수수료/세금 | KRW 원 미만 절사, USD 센트 반올림 |
+| 홀드 | 올림 (보수적). 매수 홀드 = 가격 x 수량 x (1 + 최대 수수료율 + 세율) |
+| 국내 시장가 홀드 | 상한가 x 수량 기준 |
+| 평균단가 | 0.0001 단위. 매수 수수료는 평균단가에 넣지 않고 원장 FEE 로 기록 |
+| 실현손익 | (매도가 - 평균단가) x 수량 - 매도 수수료 - 세금 |
+| 동시성 | 실계좌별 asyncio.Lock 으로 주문 접수와 체결통보 처리를 직렬화 (체결통보가 접수 응답보다 먼저 와도 안전) |
 
 ### 6.7 정합성 규칙
 | 상황 | 처리 |
@@ -581,7 +593,7 @@ E:\01_project\26_tick_trading\        ← git 저장소 (public 가능)
 |---|---|---|
 | **M0** 셋업 ✅ | 저장소, venv, 설정 로더(CENTRAL_HOME), 로그 마스킹, gitleaks/pre-commit, CI | 비밀 커밋 시도가 차단됨, `pytest` 통과 (2026-10-13 완료) |
 | **M1** KIS 연결 | auth/rest/ws/tr + `kis_check` | paper: 국내 항목 통과 / real: 국내·미국 조회와 WS 통과 (2026-10-13 조회·실시간 통과. 남은 것: 국내 장중 시세 수신, 모의 주문/취소 `--order-test`) |
-| **M2** 서브계좌 코어 | 데이터 모델, 다통화 원장, 통합증거금 hold, 상태머신, SimBroker | A(국내)/B(미국)/C(혼합) 동시 매매 시나리오 통과 |
+| **M2** 서브계좌 코어 | 데이터 모델, 다통화 원장, 통합증거금 hold, 상태머신, SimBroker | A(국내)/B(미국)/C(혼합) 동시 매매 시나리오 통과 (2026-10-13 완료. 테이블 생성은 create_all, Alembic 마이그레이션은 M4 에서 도입) |
 | **M3** KIS 주문 연동 | 체결통보 귀속, 재시작 복구, 대사, 통합증거금 자동환전 검증 | paper 국내 A/B 동시 매매 후 대사 일치. real 소액 국내 SOR과 미국 1주 검증 |
 | **M4** API 서버 | Admin, /me, /market, WS, API 키, Tailscale 바인딩 | SDK로 외부 주문 성공 |
 | **M5** 데이터 서비스 | 구독 허브, 틱 저장, 캔들 캐시, 백필 | 1주 무중단 수집 |
