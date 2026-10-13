@@ -5,7 +5,8 @@
 동시성: 실계좌별 asyncio.Lock 하나로 주문 접수와 브로커 이벤트 처리를 직렬화한다.
 체결통보가 접수 응답보다 먼저 도착해도 락 때문에 접수 기록이 끝난 뒤 처리된다.
 
-통합증거금(6.2): 미국 매수 시 USD 가 부족하면 부족분을 KRW 로 홀드하고(환율 x (1+fx_buffer)),
+환전(6.2): 기본(fx_mode=none)은 통화별 독립 잔고라 USD 가 부족하면 미국 주문을 거부한다.
+서브계좌가 fx_mode=broker 이고 실계좌가 통합증거금이면, USD 부족분을 KRW 로 홀드하고(환율 x (1+fx_buffer))
 체결 시 부족분만큼 FX_AUTO(KRW 차감, USD 증가)를 잠정 기록한다.
 """
 
@@ -339,7 +340,7 @@ class OrderService:
 
         if f.side == "buy":
             cost = notional + fee + tax
-            if cur == "USD" and self.profiles[broker_alias].integrated_margin:
+            if cur == "USD" and self._auto_fx(s, broker_alias, sub_id):
                 other_holds = ledger.held_cash(s, sub_id, "USD", exclude_order_id=order_id)
                 usable = ledger.cash_balance(s, sub_id, "USD") - other_holds
                 if usable < cost:
@@ -402,6 +403,7 @@ class OrderService:
                 raise OmsError("INVALID_REQUEST", "시스템 서브계좌로는 주문 불가")
             if sub.status != "active":
                 raise OmsError("SUB_ACCOUNT_SUSPENDED", f"서브계좌 상태 {sub.status}")
+            sub_markets = list(sub.markets)
         if not profile.trading_enabled:
             raise OmsError("ACCOUNT_TRADING_DISABLED", f"실계좌 {broker_alias} 거래 비활성")
         if not req.client_order_id or len(req.client_order_id) > 48:
@@ -411,6 +413,8 @@ class OrderService:
             raise OmsError("INVALID_SYMBOL", req.symbol)
         if instrument.market not in profile.markets:
             raise OmsError("MARKET_NOT_SUPPORTED", f"{broker_alias} 계좌는 {instrument.market} 미지원")
+        if instrument.market not in sub_markets:
+            raise OmsError("MARKET_NOT_SUPPORTED", f"서브계좌 거래 시장 {sub_markets} 밖의 주문")
         if req.side not in ("buy", "sell"):
             raise OmsError("INVALID_REQUEST", "side 는 buy/sell")
         if not isinstance(req.qty, int) or req.qty <= 0:
@@ -455,7 +459,7 @@ class OrderService:
         available = ledger.available_cash(s, sub_id, cur, exclude_order_id)
         if available >= need:
             return _HoldPlan([("cash", cur, None, need, None)])
-        if cur == "USD" and self.profiles[broker_alias].integrated_margin and fx:
+        if cur == "USD" and fx and self._auto_fx(s, broker_alias, sub_id):
             usd_part = max(available, ZERO)
             hold_rate = fx * (1 + self.fx_buffer)
             krw_need = q_hold((need - usd_part) * hold_rate, "KRW")
@@ -466,6 +470,11 @@ class OrderService:
                 items.insert(0, ("cash", "USD", None, usd_part, None))
             return _HoldPlan(items)
         raise OmsError("INSUFFICIENT_CASH", f"주문가능 {cur} 부족 (필요 {need}, 가능 {available})")
+
+    def _auto_fx(self, s: Session, broker_alias: str, sub_id: int) -> bool:
+        """USD 부족분을 KRW 로 충당(통합증거금 자동환전)할지: 실계좌가 통합증거금이고 서브계좌가 fx_mode=broker 일 때만."""
+        sub = s.get(SubAccountRow, sub_id)
+        return self.profiles[broker_alias].integrated_margin and sub is not None and sub.fx_mode == "broker"
 
     @staticmethod
     def _create_holds(s: Session, sub_id: int, order_id: int, plan: _HoldPlan) -> None:

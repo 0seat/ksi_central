@@ -33,6 +33,8 @@ class SubAccountRow(Base):
     name: Mapped[str] = mapped_column(String(64))
     type: Mapped[str] = mapped_column(String(16))  # system / strategy / app
     status: Mapped[str] = mapped_column(String(16), default="active")  # active / suspended / closed
+    markets: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["KR", "US"])  # 거래 가능한 시장
+    fx_mode: Mapped[str] = mapped_column(String(8), default="none")  # none: 통화별 독립 잔고 / broker: 통합증거금 자동환전
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
 
 

@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import tomllib
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -48,6 +49,9 @@ class AccountProfile(_Model):
     rate_limit_per_sec: float = Field(default=2.0, gt=0)
     ws_max_subscriptions: int = Field(default=40, ge=1)
     trading_enabled: bool = False
+    # 미배정 서브계좌의 USD 재고(환전 풀). 최소값 아래로 내려가면 알림 (M6)
+    usd_inventory_target: Decimal | None = None
+    usd_inventory_min: Decimal | None = None
 
     @model_validator(mode="after")
     def _default_route_supported(self) -> AccountProfile:

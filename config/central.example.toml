@@ -32,3 +32,5 @@ integrated_margin = true
 rate_limit_per_sec = 18         # 신규 앱키는 초당 약 3건으로 제한될 수 있음 (2026-10-13 실측)
 ws_max_subscriptions = 40       # 신규 앱키는 3건으로 제한될 수 있음 (2026-10-13 실측)
 trading_enabled = false
+usd_inventory_target = 5000     # 미배정이 보유할 USD 재고 (환전 풀)
+usd_inventory_min = 3000        # 이 아래로 내려가면 일괄 환전 알림

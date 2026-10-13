@@ -139,7 +139,7 @@ async def test_integrated_margin_us_buy_with_krw_only() -> None:
     env = make_env(at=US_OPEN)
     env.sim.fx = D("1400")
     env.fund("KRW", "5000000")
-    c = env.new_sub("C", KRW="1000000")
+    c = env.new_sub("C", fx_mode="broker", KRW="1000000")
 
     o = await env.orders.place(c, buy("c1", AAPL.id, 2, "187.25"))
     # 374.50 USD x 1400 x 1.02 = 534,786 KRW 홀드
@@ -158,7 +158,7 @@ async def test_integrated_margin_partial_usd() -> None:
     env = make_env(at=US_OPEN)
     env.fund("KRW", "5000000")
     env.fund("USD", "100")
-    c = env.new_sub("C", KRW="1000000", USD="100")
+    c = env.new_sub("C", fx_mode="broker", KRW="1000000", USD="100")
     await env.orders.place(c, buy("c1", AAPL.id, 1, "187.25"))
     bal = env.accounts.balances(c)
     assert bal["USD"].held == D("100.00")
@@ -172,10 +172,72 @@ async def test_integrated_margin_partial_usd() -> None:
 async def test_without_integrated_margin_usd_required() -> None:
     env = make_env(integrated_margin=False, at=US_OPEN)
     env.fund("KRW", "5000000")
+    c = env.new_sub("C", fx_mode="broker", KRW="1000000")
+    with pytest.raises(OmsError) as e:
+        await env.orders.place(c, buy("c1", AAPL.id, 1, "187.25"))
+    assert e.value.code == "INSUFFICIENT_CASH"
+
+
+# ───────────── 서브계좌 정책 (markets, fx_mode) ─────────────
+
+async def test_fx_mode_none_keeps_currencies_independent() -> None:
+    """기본 정책: 실계좌가 통합증거금이어도 서브계좌는 KRW 로 USD 부족분을 메우지 않는다."""
+    env = make_env(at=US_OPEN)
+    env.fund("KRW", "5000000")
     c = env.new_sub("C", KRW="1000000")
     with pytest.raises(OmsError) as e:
         await env.orders.place(c, buy("c1", AAPL.id, 1, "187.25"))
     assert e.value.code == "INSUFFICIENT_CASH"
+
+
+async def test_sub_account_market_scope() -> None:
+    env = make_env()
+    env.fund("KRW", "1000000")
+    env.fund("USD", "1000")
+    kr = env.new_sub("KR-only", markets=["KR"], KRW="1000000")
+    us = env.new_sub("US-only", markets=["US"], USD="1000")
+    with pytest.raises(OmsError) as e:
+        await env.orders.place(us, buy("u1", SAMSUNG.id, 1, "61000"))
+    assert e.value.code == "MARKET_NOT_SUPPORTED"
+    env.clock.t = US_OPEN
+    with pytest.raises(OmsError) as e:
+        await env.orders.place(kr, buy("k1", AAPL.id, 1, "187.25"))
+    assert e.value.code == "MARKET_NOT_SUPPORTED"
+    with pytest.raises(OmsError):
+        env.accounts.create_sub_account(ALIAS, "bad", markets=["JP"])
+    with pytest.raises(OmsError):
+        env.accounts.create_sub_account(ALIAS, "bad2", fx_mode="pool")
+
+
+async def test_usd_inventory_in_unallocated_no_fx() -> None:
+    """운용 방식: 미배정이 USD 재고(5,000달러)를 들고, 미국 전용 서브계좌는 USD 만 쓴다. 환전 기록이 없어야 한다."""
+    env = make_env(at=US_OPEN)
+    env.fund("KRW", "10000000")
+    env.fund("USD", "5000")
+    us = env.new_sub("US-trend", markets=["US"], USD="2000")
+    kr = env.new_sub("KR-scalp", markets=["KR"], KRW="3000000")
+    assert env.cash(env.unallocated_id, "USD") == D("3000.00")
+
+    await env.orders.place(us, buy("u1", AAPL.id, 10, "187.25"))
+    env.sim.set_price(AAPL, D("187.25"))
+    await env.sim.drain()
+    await env.orders.place(us, sell("u2", AAPL.id, 10, "190.00"))
+    env.sim.set_price(AAPL, D("190.00"))
+    await env.sim.drain()
+    assert env.cash(us, "USD") == D("2027.50")
+
+    env.clock.t = datetime(2026, 10, 15, 10, 0, tzinfo=KST)
+    await env.orders.place(kr, buy("k1", SAMSUNG.id, 10, "61000"))
+    env.sim.set_price(SAMSUNG, D("61000"))
+    await env.sim.drain()
+
+    env.accounts.transfer(us, env.unallocated_id, "USD", D("2027.50"))   # 운용 종료, USD 재고로 회수
+    assert env.cash(env.unallocated_id, "USD") == D("5027.50")
+    from central.storage.models import LedgerRow
+    from sqlalchemy import select
+    with env.db.session() as s:
+        assert not list(s.scalars(select(LedgerRow).where(LedgerRow.type.in_(["FX", "FX_AUTO"]))))
+    env.reconcile()
 
 
 # ───────────── 부분체결 / 취소 / 정정 / 만료 ─────────────
@@ -393,7 +455,7 @@ async def test_three_strategies_end_to_end_reconcile() -> None:
     env.fund("USD", "3000")
     a = env.new_sub("A", KRW="5000000")
     b = env.new_sub("B", USD="2000")
-    c = env.new_sub("C", KRW="5000000")
+    c = env.new_sub("C", fx_mode="broker", KRW="5000000")
 
     # 국내: A, C 가 동시에 같은 종목 매수, A 는 일부 매도
     await asyncio.gather(

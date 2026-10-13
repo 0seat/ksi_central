@@ -56,8 +56,8 @@ class OmsEnv:
         self.sim.deposit(currency, Decimal(amount))
         self.accounts.deposit_unallocated(ALIAS, currency, Decimal(amount))
 
-    def new_sub(self, name: str, **cash: str) -> int:
-        sub = self.accounts.create_sub_account(ALIAS, name)
+    def new_sub(self, name: str, markets: list[str] | None = None, fx_mode: str = "none", **cash: str) -> int:
+        sub = self.accounts.create_sub_account(ALIAS, name, markets=markets, fx_mode=fx_mode)
         for cur, amount in cash.items():
             self.accounts.transfer(self.unallocated_id, sub.id, cur, Decimal(amount))
         return sub.id

@@ -22,6 +22,8 @@ from central.storage.models import BrokerAccountRow, EventRow, PositionRow, SubA
 UNALLOCATED = "unallocated"
 SUB_TYPES = ("strategy", "app")
 SUB_STATUSES = ("active", "suspended", "closed")
+MARKETS = ("KR", "US")
+FX_MODES = ("none", "broker")
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,8 @@ class SubAccount:
     name: str
     type: str
     status: str
+    markets: tuple[str, ...]
+    fx_mode: str
 
 
 @dataclass(frozen=True)
@@ -55,7 +59,7 @@ class Position:
 
 
 def _view(row: SubAccountRow) -> SubAccount:
-    return SubAccount(row.id, row.broker_account_id, row.name, row.type, row.status)
+    return SubAccount(row.id, row.broker_account_id, row.name, row.type, row.status, tuple(row.markets), row.fx_mode)
 
 
 @contextmanager
@@ -90,20 +94,31 @@ class AccountService:
             if self._find(s, alias, UNALLOCATED) is None:
                 s.add(SubAccountRow(broker_account_id=alias, name=UNALLOCATED, type="system", created_at=self.clock()))
 
-    def create_sub_account(self, broker_account_id: str, name: str, type_: str = "strategy") -> SubAccount:
+    def create_sub_account(
+        self, broker_account_id: str, name: str, type_: str = "strategy",
+        markets: list[str] | None = None, fx_mode: str = "none",
+    ) -> SubAccount:
+        """markets: 거래 가능한 시장 (기본 KR, US). fx_mode: none(통화별 독립 잔고) / broker(통합증거금 자동환전)."""
+        markets = list(markets or MARKETS)
         if type_ not in SUB_TYPES:
             raise OmsError("INVALID_REQUEST", f"type 은 {SUB_TYPES} 중 하나")
         if name == UNALLOCATED:
             raise OmsError("INVALID_REQUEST", "예약된 이름")
+        if not markets or not set(markets) <= set(MARKETS):
+            raise OmsError("INVALID_REQUEST", f"markets 는 {MARKETS} 의 부분집합")
+        if fx_mode not in FX_MODES:
+            raise OmsError("INVALID_REQUEST", f"fx_mode 는 {FX_MODES} 중 하나")
         with tx(self.db, self.bus) as (s, ev):
             if s.get(BrokerAccountRow, broker_account_id) is None:
                 raise OmsError("NOT_FOUND", f"실계좌 {broker_account_id} 없음")
             if self._find(s, broker_account_id, name) is not None:
                 raise OmsError("DUPLICATE", f"이미 있는 서브계좌 이름: {name}")
-            row = SubAccountRow(broker_account_id=broker_account_id, name=name, type=type_, created_at=self.clock())
+            row = SubAccountRow(broker_account_id=broker_account_id, name=name, type=type_, markets=markets,
+                                fx_mode=fx_mode, created_at=self.clock())
             s.add(row)
             s.flush()
-            record_event(s, ev,"SUB_ACCOUNT_CREATED", row.id, {"name": name, "type": type_}, self.clock())
+            record_event(s, ev, "SUB_ACCOUNT_CREATED", row.id,
+                         {"name": name, "type": type_, "markets": markets, "fx_mode": fx_mode}, self.clock())
             return _view(row)
 
     def get(self, sub_account_id: int) -> SubAccount:
@@ -132,7 +147,7 @@ class AccountService:
             if row.type == "system":
                 raise OmsError("INVALID_REQUEST", "시스템 서브계좌 상태는 변경 불가")
             row.status = status
-            record_event(s, ev,"SUB_ACCOUNT_STATUS", row.id, {"status": status}, self.clock())
+            record_event(s, ev, "SUB_ACCOUNT_STATUS", row.id, {"status": status}, self.clock())
             return _view(row)
 
     # ───────────── 조회 ─────────────
@@ -178,7 +193,7 @@ class AccountService:
             now = self.clock()
             out = ledger.post(s, from_id, currency, "TRANSFER_OUT", -amount, at=now, ref_type="sub", ref_id=to_id, memo=memo or None)
             ledger.post(s, to_id, currency, "TRANSFER_IN", amount, at=now, ref_type="ledger", ref_id=out.id, memo=memo or None)
-            record_event(s, ev,"TRANSFER", from_id, {"to": to_id, "currency": currency, "amount": str(amount)}, now)
+            record_event(s, ev, "TRANSFER", from_id, {"to": to_id, "currency": currency, "amount": str(amount)}, now)
 
     def record_fx(self, sub_account_id: int, from_currency: str, from_amount: Decimal, to_currency: str, to_amount: Decimal) -> None:
         """HTS 등에서 직접 환전한 결과를 서브계좌에 반영."""
@@ -200,7 +215,7 @@ class AccountService:
             self._get(s, sub_account_id)
             now = self.clock()
             ledger.post(s, sub_account_id, currency, "ADJUST", q_cash(amount, currency), at=now, memo=memo)
-            record_event(s, ev,"ADJUST", sub_account_id, {"currency": currency, "amount": str(amount), "memo": memo}, now)
+            record_event(s, ev, "ADJUST", sub_account_id, {"currency": currency, "amount": str(amount), "memo": memo}, now)
 
     def transfer_position(self, from_id: int, to_id: int, instrument_id: str, qty: int) -> None:
         """보유종목을 평균단가 그대로 다른 서브계좌로 이동 (예: 미배정 → 전략)."""
@@ -225,7 +240,7 @@ class AccountService:
             sp.qty -= qty
             now = self.clock()
             sp.updated_at = dp.updated_at = now
-            record_event(s, ev,"POSITION_TRANSFER", from_id, {"to": to_id, "instrument_id": instrument_id, "qty": qty}, now)
+            record_event(s, ev, "POSITION_TRANSFER", from_id, {"to": to_id, "instrument_id": instrument_id, "qty": qty}, now)
 
     # ───────────── 내부 ─────────────
     @staticmethod
