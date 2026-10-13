@@ -46,6 +46,7 @@ class AccountProfile(_Model):
     kr_default_route: KrRoute = "KRX"
     integrated_margin: bool = False
     rate_limit_per_sec: float = Field(default=2.0, gt=0)
+    ws_max_subscriptions: int = Field(default=40, ge=1)
     trading_enabled: bool = False
 
     @model_validator(mode="after")

@@ -20,7 +20,7 @@ markets = ["KR"]                # KIS 모의투자가 해외를 지원하면 "US
 kr_routes = ["KRX"]
 kr_default_route = "KRX"
 integrated_margin = false
-rate_limit_per_sec = 2
+rate_limit_per_sec = 1          # 모의는 0.5초 간격에서도 EGW00201 빈발 (2026-10-13 실측)
 trading_enabled = false
 
 [accounts.real]
@@ -29,5 +29,6 @@ markets = ["KR", "US"]
 kr_routes = ["KRX", "NXT", "SOR"]
 kr_default_route = "SOR"
 integrated_margin = true
-rate_limit_per_sec = 18
+rate_limit_per_sec = 18         # 신규 앱키는 초당 약 3건으로 제한될 수 있음 (2026-10-13 실측)
+ws_max_subscriptions = 40       # 신규 앱키는 3건으로 제한될 수 있음 (2026-10-13 실측)
 trading_enabled = false

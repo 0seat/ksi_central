@@ -155,6 +155,18 @@ KIS 연결을 독점하고 그 위에 **가상 서브계좌**를 제공하는 �
 | 연속조회 | 응답 헤더 `tr_cont`가 `M`/`F`이면 다음 페이지가 있다. 요청 헤더 `tr_cont=N`과 `CTX_AREA_*` 키를 넘긴다 | 공통 페이지네이터 |
 | 잔고 페이지 크기 | 실전 50건, 모의 20건 | |
 
+#### M1 실측 결과 (2026-10-13)
+| 항목 | 결과 | 반영 |
+|---|---|---|
+| 실전 호출 한도 | 18건/초 설정 시 `EGW00201` 연속 발생. 실제로는 **초당 약 2~3건** | profile `rate_limit_per_sec = 2` |
+| 실전 WS 구독 | **3건**에서 `OPSP0008 MAX SUBSCRIBE OVER` | profile `ws_max_subscriptions = 3` |
+| 모의 호출 한도 | 0.5초 간격에서도 `EGW00201` 빈발 | profile `rate_limit_per_sec = 1` |
+| 모의 휴장일 조회 | `EGW02006 모의투자 TR 이 아닙니다` | `KR_HOLIDAY` 모의 미지원 처리 |
+| 미국 실시간 체결 `HDFSCNT0` | 실시간 수신 확인. **필드 26개** (공식 샘플 컬럼 목록 25개 + 맨 앞 `RSYM`) | M5 파서에 반영 |
+| 미국 호가 `HDFSASP0` | **필드 71개** (공식 샘플은 1호가 16개만 정의) | M5에서 필드 정의 확인 |
+
+> 실전 제한(초당 2~3건, 구독 3건)은 신규 앱키에 걸리는 임시 제한으로 추정한다. 공식 문서에서는 근거를 찾지 못했다. 며칠 뒤 `kis_check`로 다시 측정하고 설정값을 올린다. 구독 3건으로는 실시간 운영이 불가능하므로 **M5 전에 반드시 해소**해야 한다.
+
 ### 5.3 TR ID 확정표: 국내주식
 | 기능 | 경로 | TR ID (real / paper) | 비고 |
 |---|---|---|---|
@@ -200,8 +212,9 @@ KIS 연결을 독점하고 그 위에 **가상 서브계좌**를 제공하는 �
 - 결과는 콘솔 표와 JSON으로 출력한다. **로그에 키, 토큰, 계좌번호는 마스킹**한다
 
 ### 5.6 산출물
-- `central/broker/kis/auth.py`, `rest.py`, `ws.py`, `tr.py`(TR ID 테이블 단일 관리), `kr.py`, `us.py`
+- `central/broker/kis/auth.py`, `rest.py`, `ws.py`, `tr.py`(TR ID 테이블 단일 관리), `crypto.py`
 - `tools/kis_check.py`
+- 시장 어댑터(`kr.py`, `us.py`)는 M2~M3에서, WS 자동 재연결과 재구독은 M5 구독 허브에서 구현한다.
 
 ---
 
@@ -567,7 +580,7 @@ E:\01_project\26_tick_trading\        ← git 저장소 (public 가능)
 | 마일스톤 | 내용 | 완료 기준 |
 |---|---|---|
 | **M0** 셋업 ✅ | 저장소, venv, 설정 로더(CENTRAL_HOME), 로그 마스킹, gitleaks/pre-commit, CI | 비밀 커밋 시도가 차단됨, `pytest` 통과 (2026-10-13 완료) |
-| **M1** KIS 연결 | auth/rest/ws/tr + `kis_check` | paper: 국내 항목 통과 / real: 국내·미국 조회와 WS 통과 |
+| **M1** KIS 연결 | auth/rest/ws/tr + `kis_check` | paper: 국내 항목 통과 / real: 국내·미국 조회와 WS 통과 (2026-10-13 조회·실시간 통과. 남은 것: 국내 장중 시세 수신, 모의 주문/취소 `--order-test`) |
 | **M2** 서브계좌 코어 | 데이터 모델, 다통화 원장, 통합증거금 hold, 상태머신, SimBroker | A(국내)/B(미국)/C(혼합) 동시 매매 시나리오 통과 |
 | **M3** KIS 주문 연동 | 체결통보 귀속, 재시작 복구, 대사, 통합증거금 자동환전 검증 | paper 국내 A/B 동시 매매 후 대사 일치. real 소액 국내 SOR과 미국 1주 검증 |
 | **M4** API 서버 | Admin, /me, /market, WS, API 키, Tailscale 바인딩 | SDK로 외부 주문 성공 |
