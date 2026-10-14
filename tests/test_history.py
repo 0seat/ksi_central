@@ -93,6 +93,22 @@ def test_near_fraction_capital_change_keeps_measured_ratio() -> None:
     assert reconstruction_error(raw, adj, ev, "US")["days_off"] == 0
 
 
+def test_kis_adjusted_minutes_restored_to_raw() -> None:
+    """국내 분봉은 받는 시점 기준 수정주가로 온다: 이벤트 이전 날은 계수로 나눠 원주가로, 거래량은 곱한다. 반복해도 같다."""
+    from central.marketdata.history import to_raw_minutes
+
+    key = SeriesKey("KR", "207940")
+    ev = [Event(date(2025, 11, 24), D("1.5"), "split")]
+    daily = [day_bar(date(2025, 11, 21), "1000000"), day_bar(date(2025, 11, 24), "1600000")]
+    before = [Candle(b.ts, D(1500000), D(1500000), D(1500000), D(1500000), 10) for b in kr_minutes(date(2025, 11, 21), "0900", 3)]
+    after = [Candle(b.ts, D(1600000), D(1600000), D(1600000), D(1600000), 10) for b in kr_minutes(date(2025, 11, 24), "0900", 3)]
+    raw, fix = to_raw_minutes(key, before + after, daily, ev)
+    assert fix == {"scaled_days": 1, "unknown_days": []}
+    assert [b.close for b in raw[:3]] == [D(1000000)] * 3 and raw[0].volume == 15 and raw[3:] == after
+    again, fix2 = to_raw_minutes(key, raw, daily, ev)
+    assert again == raw and fix2["scaled_days"] == 0
+
+
 def test_no_events_when_ratio_constant() -> None:
     raw = series(date(2025, 1, 2), [str(100 + i % 7) for i in range(50)])
     assert detect_events(raw, scaled(raw, [D(1)] * 50, "0.0001"), "US") == []

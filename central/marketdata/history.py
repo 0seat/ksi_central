@@ -37,7 +37,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from central.broker.base import Candle
-from central.core.instruments import Instrument
+from central.core.instruments import Instrument, tick_size
 from central.core.market_hours import KST, NEW_YORK, now_kst
 from central.marketdata.candles import _page_end, in_regular_session
 
@@ -207,6 +207,52 @@ def adjust(bars: list[Candle], events: Iterable[Event], mode: Adjust, zone) -> l
                           (b.low * f).quantize(PRICE_QUANT), (b.close * f).quantize(PRICE_QUANT),
                           int((Decimal(b.volume) / fv).to_integral_value())))
     return out
+
+
+def _restore(key: SeriesKey, price: Decimal, r: Decimal, unit: Decimal) -> Decimal:
+    raw = (price / r).quantize(unit)
+    if key.market == "KR":
+        tick = tick_size(Instrument(str(key), "KR", key.code, "KRX", key.code), raw)
+        raw = ((raw / tick).to_integral_value() * tick).quantize(unit)
+    return raw
+
+
+def to_raw_minutes(key: SeriesKey, bars: list[Candle], daily_raw: list[Candle],
+                   events: list[Event]) -> tuple[list[Candle], dict]:
+    """KIS 분봉을 원주가로 되돌린다. 국내 분봉은 받는 시점 기준 수정주가로 온다 (2026-10-15 실측:
+    삼성바이오로직스 2025-11-24 이전 분봉이 이벤트 계수 1.4604 배, 거래량은 1/1.4604 배).
+    미국 분봉은 배당이 반영되지 않았다 (분할은 미확인). 그래서 추정하지 않고 날마다 정규장 분봉 고가를
+    원주가 일봉 고가와 비교해, 그날의 자본변동 계수와 같으면 나누고 1 이면 둔다. 이미 원주가면 바뀌지 않는다."""
+    if key.index or not events:
+        return bars, {"scaled_days": 0, "unknown_days": []}
+    dates, price, _ = factor_table(events, "split")
+    daily = {b.ts.date(): b for b in daily_raw}
+    unit = _UNIT[key.market]
+    by_day: dict[date, list[Candle]] = {}
+    for b in bars:
+        by_day.setdefault(b.ts.astimezone(key.zone).date(), []).append(b)
+    out: list[Candle] = []
+    scaled, unknown = 0, []
+    for day, group in sorted(by_day.items()):
+        idx = next((n for n, x in enumerate(dates) if x > day), None)
+        f = price[idx] if idx is not None else Decimal(1)
+        reg = regular_only(key, group)
+        db = daily.get(day)
+        if f == 1 or db is None or not reg or db.high <= 0:
+            out += group
+            continue
+        r = max(b.high for b in reg) / db.high
+        if abs(r / f - 1) <= Decimal("0.003"):
+            # 이벤트 계수(일봉 비율의 중앙값)는 KIS 내부 계수와 0.003% 정도 달라 그대로 나누면 30원씩 어긋난다.
+            # 그날 실측 비율 r 로 나누고 국내는 호가단위에 맞춘다
+            scaled += 1
+            out += [Candle(b.ts, *(_restore(key, x, r, unit) for x in (b.open, b.high, b.low, b.close)),
+                           int((Decimal(b.volume) * r).to_integral_value())) for b in group]
+        else:
+            if abs(r - 1) > Decimal("0.003"):
+                unknown.append(str(day))
+            out += group
+    return out, {"scaled_days": scaled, "unknown_days": unknown}
 
 
 def reconstruction_error(raw: list[Candle], adj: list[Candle], events: list[Event], market: str) -> dict:
@@ -421,9 +467,23 @@ class HistoryFetcher:
                     page = await broker.history_minutes(inst, datetime.combine(day, _KR_LATE[1], KST))
                     calls += 1
                     seen.update({b.ts: b for b in page})
-        added = self.store.save_minutes(key, (b for b in seen.values() if b.ts < cutoff))
-        return {"symbol": str(key), "calls": calls, "added": added,
+        # 일봉/이벤트를 먼저 받아 둔 상태여야 원주가로 되돌릴 수 있다 (daily → minutes 순서)
+        raw, fix = to_raw_minutes(key, [b for b in seen.values() if b.ts < cutoff], self.store.daily(key),
+                                  self.store.events(key))
+        if fix["unknown_days"]:
+            log.warning("%s 분봉/일봉 비율이 1 도 이벤트 계수도 아닌 날: %s", key, fix["unknown_days"][:10])
+        added = self.store.save_minutes(key, raw)
+        return {"symbol": str(key), "calls": calls, "added": added, "unadjusted_days": fix["scaled_days"],
+                "unknown_days": len(fix["unknown_days"]),
                 "oldest": min(seen).isoformat() if seen else None, "truncated": calls >= self.max_pages}
+
+    def repair_minutes(self, key: SeriesKey) -> dict:
+        """보관된 분봉 중 수정주가로 들어간 날을 원주가로 되돌린다 (여러 번 돌려도 결과 같음)."""
+        bars = self.store.minutes(key, regular=False)
+        raw, fix = to_raw_minutes(key, bars, self.store.daily(key), self.store.events(key))
+        if fix["scaled_days"]:
+            self.store.save_minutes(key, raw)
+        return {"symbol": str(key), **fix}
 
     def _today(self, key: SeriesKey) -> date:
         return self.clock().astimezone(key.zone).date()

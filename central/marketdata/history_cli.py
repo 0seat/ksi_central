@@ -96,10 +96,11 @@ async def _fetch(args: argparse.Namespace, settings: Settings) -> int:
                 assert reg is not None
                 inst = reg.get(str(key)) or Instrument(str(key), key.market, key.code,
                                                         "KRX" if key.market == "KR" else "NASD", key.code)
-                if args.only in (None, "minutes"):
-                    print(" ", await fetcher.minutes(inst, progress=lambda m: print("   ", m, flush=True)), flush=True)
+                # 일봉(이벤트)을 먼저: 분봉을 원주가로 되돌리는 데 쓴다
                 if args.only in (None, "daily"):
                     print(" ", await fetcher.daily(inst, full=args.full), flush=True)
+                if args.only in (None, "minutes"):
+                    print(" ", await fetcher.minutes(inst, progress=lambda m: print("   ", m, flush=True)), flush=True)
             except Exception as e:   # 한 종목 실패가 나머지를 막지 않게
                 failed += 1
                 print(f"  [실패] {key}: {type(e).__name__}: {e}", flush=True)
@@ -127,6 +128,15 @@ def _events(args: argparse.Namespace, settings: Settings) -> int:
     store = HistoryStore(history_root(settings))
     for e in store.events(SeriesKey.parse(args.symbol)):
         print(f"{e.date}  x {e.ratio}  {e.kind}")
+    return 0
+
+
+def _repair(args: argparse.Namespace, settings: Settings) -> int:
+    fetcher = HistoryFetcher(HistoryStore(history_root(settings)), lambda m: None)
+    for sym in args.symbols or fetcher.store.symbols():
+        key = SeriesKey.parse(sym)
+        if not key.index:
+            print(fetcher.repair_minutes(key))
     return 0
 
 
@@ -162,6 +172,8 @@ def add_parser(sub) -> None:
     e = hs.add_parser("events", help="기업행위 이벤트 (분할/병합/배당)")
     e.add_argument("symbol")
     hs.add_parser("list", help="보관 중인 종목")
+    rp = hs.add_parser("repair", help="수정주가로 들어간 분봉을 원주가로 되돌림 (일봉/이벤트 기준, 반복 실행 안전)")
+    rp.add_argument("symbols", nargs="*")
     h.set_defaults(func=run)
 
 
@@ -171,4 +183,4 @@ def run(args: argparse.Namespace) -> int:
         if not args.symbols and not args.top_kr and not args.top_us:
             raise SystemExit("종목을 주거나 --top-kr/--top-us 를 쓰세요")
         return asyncio.run(_fetch(args, settings))
-    return {"show": _show, "events": _events, "list": _list}[args.action](args, settings)
+    return {"show": _show, "events": _events, "list": _list, "repair": _repair}[args.action](args, settings)

@@ -149,8 +149,8 @@ class Operations:
             inst = self.app.instruments.get(sym) or self.app.instruments.ensure(sym)
             try:
                 before = len(fetcher.store.events(key))
+                d = await fetcher.daily(inst)      # 이벤트를 먼저: 분봉을 원주가로 되돌리는 데 쓴다
                 m = await fetcher.minutes(inst)
-                d = await fetcher.daily(inst)
                 lines.append(f"{sym} 분봉 +{m['added']} 일봉 +{d['added']}")
                 if d["events"] > before:
                     new_events += [f"{sym} {e.date} x{e.ratio} ({e.kind})" for e in fetcher.store.events(key)[before:]]
