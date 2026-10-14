@@ -94,6 +94,7 @@ avg_fill_price, status, reject_reason, orig_order_id, broker_order_no, created_a
 | `quote(symbol)` | `GET /market/quote/{symbol}` | `last, upper_limit, lower_limit, source`. 실시간 수신 중(최근 10초 체결)이면 `source="realtime"` 에 `bid, ask, cum_volume, venue` 추가 |
 | `orderbook(symbol)` | `GET /market/orderbook/{symbol}` | `asks`, `bids`: `[[가격, 수량], ...]` 가까운 호가부터 10단계 (미국은 1단계) |
 | `candles(symbol, interval="1d", start=, end=, limit=500)` | `GET /market/candles/{symbol}` | interval: `1m 5m 15m 30m 60m 1d 1w 1M`. `candles: [{ts, open, high, low, close, volume}]` 오래된 것부터, ts 는 봉 시작 시각. 분봉은 정규장만. start 생략 시 분봉은 하루 전부터, `truncated` 면 기간을 줄일 것 |
+| `history(symbol, interval="1d", adjust="none", start=, end=, limit=5000)` | `GET /market/history/{symbol}` | 보관소 조회 (KIS 에서 만료된 과거 분봉 포함, 보관 중인 종목만). interval: `1m 1d`. adjust: `none` 원주가, `split` 분할/병합만, `total` 배당까지. symbol 에 지수 가능 (`INDEX:KR:0001` 코스피, `INDEX:US:COMP` 나스닥 종합). `events: [{date, ratio, kind}]` 은 기업행위 (date 이전 가격 x ratio) |
 | `ticks(symbol, day=None, limit=10000)` | `GET /market/ticks/{symbol}` | 저장된 틱 (상시 수집 종목이나 누군가 구독 중일 때만 쌓임) |
 | `calendar(market="KR", start=, end=)` | `GET /market/calendar` | `days: [{date, open, source, early_close_et?}]` |
 | `market_status(market=None)` | `GET /market/status` | 시장별 `{accepting_orders, reason}` |

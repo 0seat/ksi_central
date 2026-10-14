@@ -35,6 +35,14 @@ stale_tick_minutes = 5          # 장중 watchlist 종목 체결이 이만큼 �
 # name = "pilot"
 # args = ["-m", "apps.pilot", "run"]
 
+[history]
+# 과거 시세 보관소 (%CENTRAL_HOME%\data\history). 원주가와 기업행위(분할/병합/배당)를 따로 저장하고
+# 조회할 때 수정한다. 비우면 일정 작업 없음. 새 종목은 먼저 python -m central history fetch <종목> 으로 끝까지 받을 것.
+# 국내 16:10, 미국 17:00 ET 에 1분봉/일봉/기업행위 갱신. 지수 1분봉은 KIS 가 최근 약 100개만 주므로 장중 주기 수집
+symbols = []                    # 예: ["KR:005930", "US:AAPL"]
+indices = []                    # 예: ["INDEX:KR:0001", "INDEX:KR:1001", "INDEX:US:COMP", "INDEX:US:SPX"]
+index_minutes_every = 60        # 분
+
 # 실계좌 profile. 키 이름(alias)은 secrets.toml 의 [accounts.<alias>] 와 일치해야 한다.
 # 모의/실전은 env 값만 다르고 코드 경로는 같다.
 

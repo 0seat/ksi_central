@@ -163,6 +163,8 @@ def main(argv: list[str] | None = None) -> int:
     db.add_argument("action", choices=["upgrade", "current"])
     db.set_defaults(func=_cmd_db)
     sub.add_parser("master", help="KIS 종목 마스터 적재").set_defaults(func=_cmd_master)
+    from central.marketdata import history_cli
+    history_cli.add_parser(sub)
     gk = sub.add_parser("gen-admin-key", help="관리자 키 생성 후 secrets.toml 에 기록")
     gk.add_argument("--force", action="store_true", help="기존 키 교체")
     gk.set_defaults(func=_cmd_gen_admin_key)

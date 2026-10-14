@@ -244,10 +244,13 @@ class KisBroker(Broker):
         except (KisApiError, httpx.HTTPError) as e:
             raise BrokerUnavailable(f"캔들 조회 실패: {e}") from None
 
-    async def _kr_candles(self, inst: Instrument, interval: str, end: datetime) -> list[Candle]:
+    async def _kr_candles(
+        self, inst: Instrument, interval: str, end: datetime, mkt: str | None = None, adjusted: bool = True,
+    ) -> list[Candle]:
+        mkt = mkt or self._kr_mkt()
         if interval == "1m":
             body = (await self.rest.request(tr.KR_MINUTE_DAILY, {
-                "FID_COND_MRKT_DIV_CODE": self._kr_mkt(), "FID_INPUT_ISCD": inst.code,
+                "FID_COND_MRKT_DIV_CODE": mkt, "FID_INPUT_ISCD": inst.code,
                 "FID_INPUT_HOUR_1": end.strftime("%H%M%S"), "FID_INPUT_DATE_1": end.strftime("%Y%m%d"),
                 "FID_PW_DATA_INCU_YN": "Y", "FID_FAKE_TICK_INCU_YN": ""})).body
             rows = [(datetime.strptime(r["stck_bsop_date"] + r["stck_cntg_hour"], "%Y%m%d%H%M%S").replace(tzinfo=KST),
@@ -256,16 +259,17 @@ class KisBroker(Broker):
         else:
             span = {"1d": 150, "1w": 1000, "1M": 4000}[interval]
             body = (await self.rest.request(tr.KR_DAILY_CHART, {
-                "FID_COND_MRKT_DIV_CODE": self._kr_mkt(), "FID_INPUT_ISCD": inst.code,
+                "FID_COND_MRKT_DIV_CODE": mkt, "FID_INPUT_ISCD": inst.code,
                 "FID_INPUT_DATE_1": (end - timedelta(days=span)).strftime("%Y%m%d"),
                 "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
-                "FID_PERIOD_DIV_CODE": {"1d": "D", "1w": "W", "1M": "M"}[interval], "FID_ORG_ADJ_PRC": "0"})).body
+                "FID_PERIOD_DIV_CODE": {"1d": "D", "1w": "W", "1M": "M"}[interval],
+                "FID_ORG_ADJ_PRC": "0" if adjusted else "1"})).body
             rows = [(datetime.strptime(r["stck_bsop_date"], "%Y%m%d").replace(tzinfo=KST),
                      r["stck_oprc"], r["stck_hgpr"], r["stck_lwpr"], r["stck_clpr"], r["acml_vol"])
                     for r in _rows(body, "output2") if r.get("stck_bsop_date")]
         return _candles(rows, end)
 
-    async def _us_candles(self, inst: Instrument, interval: str, end: datetime) -> list[Candle]:
+    async def _us_candles(self, inst: Instrument, interval: str, end: datetime, adjusted: bool = True) -> list[Candle]:
         excd = tr.US_QUOTE_EXCD[inst.exchange]
         if interval == "1m":
             first = end >= self.clock() - timedelta(minutes=1)
@@ -282,11 +286,82 @@ class KisBroker(Broker):
         else:
             body = (await self.rest.request(tr.US_DAILY_CHART, {
                 "AUTH": "", "EXCD": excd, "SYMB": inst.code, "GUBN": {"1d": "0", "1w": "1", "1M": "2"}[interval],
-                "BYMD": end.astimezone(NEW_YORK).strftime("%Y%m%d"), "MODP": "1"})).body
+                "BYMD": end.astimezone(NEW_YORK).strftime("%Y%m%d"), "MODP": "1" if adjusted else "0"})).body
+            # 휴장일에 거래량 0, 시가=고가=저가=종가인 채움 행이 섞여 온다 (2010 년 등, 2026-10-15 실측)
             rows = [(datetime.strptime(r["xymd"], "%Y%m%d").replace(tzinfo=KST),
                      r["open"], r["high"], r["low"], r["clos"], r["tvol"])
-                    for r in _rows(body, "output2") if r.get("xymd")]
+                    for r in _rows(body, "output2")
+                    if r.get("xymd") and not (_i(r.get("tvol")) == 0 and len({r["open"], r["high"], r["low"], r["clos"]}) == 1)]
         return _candles(rows, end)
+
+    # ───────────── 과거 시세 보관 (central/marketdata/history.py) ─────────────
+    async def history_minutes(self, inst: Instrument, end: datetime) -> list[Candle]:
+        """보관용 1분봉 한 페이지 (시간외 포함, 오래된 순). 국내는 KRX(J) 시세로 고정한다."""
+        try:
+            if inst.market == "KR":
+                return await self._kr_candles(inst, "1m", end.astimezone(KST), mkt="J")
+            return await self._us_candles(inst, "1m", end.astimezone(KST))
+        except (KisApiError, httpx.HTTPError) as e:
+            raise BrokerUnavailable(f"분봉 조회 실패: {e}") from None
+
+    async def history_daily(self, inst: Instrument, end: date, adjusted: bool) -> list[Candle]:
+        """보관용 일봉 한 페이지 (end 이전 최대 100개). adjusted=False 면 원주가."""
+        # 현지 날짜의 하루 끝: 미국 BYMD 는 뉴욕 날짜로 바꿔 보내므로 KST 0시를 쓰면 하루 앞당겨진다
+        at = datetime.combine(end, datetime.max.time().replace(microsecond=0), KST if inst.market == "KR" else NEW_YORK)
+        try:
+            if inst.market == "KR":
+                return await self._kr_candles(inst, "1d", at, mkt="J", adjusted=adjusted)
+            return await self._us_candles(inst, "1d", at, adjusted=adjusted)
+        except (KisApiError, httpx.HTTPError) as e:
+            raise BrokerUnavailable(f"일봉 조회 실패: {e}") from None
+
+    async def index_daily(self, market: str, code: str, end: date) -> list[Candle]:
+        """지수 일봉 한 페이지 (국내 최대 50개, 해외 최대 100개). 국내 code 예: 0001 코스피, 해외 예: COMP, SPX."""
+        try:
+            if market == "KR":
+                body = (await self.rest.request(tr.KR_INDEX_DAILY, {
+                    "FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": code,
+                    # 구간 안의 최근 50개만 오므로 시작일을 넉넉히 잡아 매번 50개를 채운다
+                    "FID_INPUT_DATE_1": (end - timedelta(days=3650)).strftime("%Y%m%d"),
+                    "FID_INPUT_DATE_2": end.strftime("%Y%m%d"), "FID_PERIOD_DIV_CODE": "D"})).body
+                rows = [(datetime.strptime(r["stck_bsop_date"], "%Y%m%d").replace(tzinfo=KST), r["bstp_nmix_oprc"],
+                         r["bstp_nmix_hgpr"], r["bstp_nmix_lwpr"], r["bstp_nmix_prpr"], r["acml_vol"])
+                        for r in _rows(body, "output2") if r.get("stck_bsop_date")]
+            else:
+                body = (await self.rest.request(tr.OVERSEAS_INDEX_DAILY, {
+                    "FID_COND_MRKT_DIV_CODE": "N", "FID_INPUT_ISCD": code,
+                    "FID_INPUT_DATE_1": (end - timedelta(days=3650)).strftime("%Y%m%d"),
+                    "FID_INPUT_DATE_2": end.strftime("%Y%m%d"), "FID_PERIOD_DIV_CODE": "D"})).body
+                rows = [(datetime.strptime(r["stck_bsop_date"], "%Y%m%d").replace(tzinfo=KST), r["ovrs_nmix_oprc"],
+                         r["ovrs_nmix_hgpr"], r["ovrs_nmix_lwpr"], r["ovrs_nmix_prpr"], r["acml_vol"])
+                        for r in _rows(body, "output2") if r.get("stck_bsop_date")]
+        except (KisApiError, httpx.HTTPError) as e:
+            raise BrokerUnavailable(f"지수 일봉 조회 실패: {e}") from None
+        return _candles(rows, datetime.combine(end, datetime.min.time(), KST))
+
+    async def index_minutes(self, market: str, code: str) -> list[Candle]:
+        """지수 1분봉: 최근 약 100개만 온다 (날짜 지정, 연속조회 없음. 2026-10-15 실측). 장중에 주기적으로 받아 쌓는다."""
+        try:
+            if market == "KR":
+                body = (await self.rest.request(tr.KR_INDEX_MINUTE, {
+                    "FID_COND_MRKT_DIV_CODE": "U", "FID_ETC_CLS_CODE": "0", "FID_INPUT_ISCD": code,
+                    "FID_INPUT_HOUR_1": "60", "FID_PW_DATA_INCU_YN": "Y"})).body
+                rows = [(datetime.strptime(r["stck_bsop_date"] + r["stck_cntg_hour"], "%Y%m%d%H%M%S").replace(tzinfo=KST),
+                         r["bstp_nmix_oprc"], r["bstp_nmix_hgpr"], r["bstp_nmix_lwpr"], r["bstp_nmix_prpr"], r["cntg_vol"])
+                        for r in _rows(body, "output2")
+                        if r.get("stck_bsop_date") and r.get("stck_cntg_hour", "999999") < "240000"]  # 999999 요약 행 제외
+            else:
+                body = (await self.rest.request(tr.OVERSEAS_INDEX_MINUTE, {
+                    "FID_COND_MRKT_DIV_CODE": "N", "FID_INPUT_ISCD": code, "FID_HOUR_CLS_CODE": "0",
+                    "FID_PW_DATA_INCU_YN": "Y"})).body
+                # 해외지수 분봉 시각은 뉴욕 현지 시각
+                rows = [(datetime.strptime(r["stck_bsop_date"] + r["stck_cntg_hour"], "%Y%m%d%H%M%S")
+                         .replace(tzinfo=NEW_YORK).astimezone(KST),
+                         r["optn_oprc"], r["optn_hgpr"], r["optn_lwpr"], r["optn_prpr"], r["cntg_vol"])
+                        for r in _rows(body, "output2") if r.get("stck_bsop_date")]
+        except (KisApiError, httpx.HTTPError) as e:
+            raise BrokerUnavailable(f"지수 분봉 조회 실패: {e}") from None
+        return _candles(rows, now_kst() + timedelta(days=1))
 
     async def market_days(self, start: date, pages: int = 3) -> list[tuple[date, bool]]:
         """국내 개장일 (CTCA0903R, 실전 전용). 1회 24일치, 같은 기준일에 ctx_area_fk/nk 와 tr_cont=N 으로 이어 받는다."""

@@ -61,6 +61,15 @@ KR_DAILY_CCLD = Tr(f"{_DS}/trading/inquire-daily-ccld", "GET", "TTTC0081R", "VTT
 # ───────────── 해외주식 (미국) ─────────────
 _OP = "/uapi/overseas-price/v1"
 _OS = "/uapi/overseas-stock/v1"
+# 지수 (2026-10-15 실측: 일봉 국내 50개/해외 100개씩, 분봉은 최근 약 100개만)
+KR_INDEX_DAILY = _same(f"{_DS}/quotations/inquire-daily-indexchartprice", "FHKUP03500100")
+KR_INDEX_MINUTE = _same(f"{_DS}/quotations/inquire-time-indexchartprice", "FHKUP03500200")
+OVERSEAS_INDEX_DAILY = _same(f"{_OP}/quotations/inquire-daily-chartprice", "FHKST03030100")
+OVERSEAS_INDEX_MINUTE = _same(f"{_OP}/quotations/inquire-time-indexchartprice", "FHKST03030200")
+# 시가총액 순위 (해외는 공식 예제에 없는 CURR_GB 가 필수, 2026-10-15 실측)
+KR_MARKET_CAP = _same(f"{_DS}/ranking/market-cap", "FHPST01740000")
+US_MARKET_CAP = _same(f"{_OS}/ranking/market-cap", "HHDFS76350100")
+
 US_PRICE = _same(f"{_OP}/quotations/price", "HHDFS00000300")
 US_DAILY_CHART = _same(f"{_OP}/quotations/dailyprice", "HHDFS76240000")
 US_MINUTE_CHART = _same(f"{_OP}/quotations/inquire-time-itemchartprice", "HHDFS76950200")

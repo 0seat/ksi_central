@@ -162,6 +162,20 @@ class OpsConfig(_Model):
         return v
 
 
+class HistoryConfig(_Model):
+    """과거 시세 보관 (central/marketdata/history.py). 목록이 비어 있으면 일정 작업이 돌지 않는다.
+    처음 넣은 종목은 python -m central history fetch 로 먼저 끝까지 받아 둘 것 (국내 1년치 종목당 약 15분)."""
+    symbols: list[str] = Field(default_factory=list)   # KR:005930, US:AAPL
+    indices: list[str] = Field(default_factory=list)   # INDEX:KR:0001, INDEX:US:COMP
+    index_minutes_every: int = Field(default=60, ge=10, le=100)   # 장중 지수 1분봉 수집 주기(분). KIS 는 최근 약 100개만 줌
+
+    @field_validator("symbols", "indices")
+    @classmethod
+    def _keys(cls, v: list[str]) -> list[str]:
+        from central.marketdata.history import SeriesKey
+        return [str(SeriesKey.parse(x)) for x in v]
+
+
 _DISCORD_WEBHOOK = re.compile(r"^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+$")
 
 
@@ -171,6 +185,7 @@ class Settings(_Model):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     market_data: MarketDataConfig = Field(default_factory=MarketDataConfig)
     ops: OpsConfig = Field(default_factory=OpsConfig)
+    history: HistoryConfig = Field(default_factory=HistoryConfig)
     accounts: dict[str, Account]
     admin_key: SecretStr | None = None
     discord_webhook: SecretStr | None = None

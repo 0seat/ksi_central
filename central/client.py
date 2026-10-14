@@ -136,6 +136,13 @@ class CentralClient:
         return await self._req("GET", f"/market/candles/{symbol}", params=_dates(
             {"interval": interval, "limit": limit, "start": start, "end": end}))
 
+    async def history(self, symbol: str, interval: str = "1d", *, adjust: str = "none", start=None, end=None,
+                      limit: int = 5000) -> dict:
+        """보관소 조회 (KIS 에서 만료된 과거 분봉 포함). symbol 예: KR:005930, US:AAPL, INDEX:KR:0001.
+        adjust: none(원주가) / split(분할·병합만) / total(배당까지). interval: 1m, 1d."""
+        return await self._req("GET", f"/market/history/{symbol}", params=_dates(
+            {"interval": interval, "adjust": adjust, "limit": limit, "start": start, "end": end}))
+
     async def orderbook(self, symbol: str) -> dict:
         return await self._req("GET", f"/market/orderbook/{symbol}")
 

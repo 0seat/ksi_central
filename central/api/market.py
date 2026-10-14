@@ -128,6 +128,34 @@ async def candles(app: App, symbol: str, interval: str = "1d",
                             "volume": b.volume} for b in bars]})
 
 
+@router.get("/history/{symbol:path}")
+def history(app: App, symbol: str, interval: Literal["1m", "1d"] = "1d",
+            adjust: Literal["none", "split", "total"] = "none",
+            start: dt.datetime | dt.date | None = Query(default=None, alias="from"),
+            end: dt.datetime | dt.date | None = Query(default=None, alias="to"),
+            limit: int = Query(default=5000, ge=1, le=100000)):
+    """보관소(원주가 + 기업행위)에서 조회. KIS 에서 만료된 과거 분봉도 여기 있으면 나온다 (central/marketdata/history.py).
+
+    symbol: KR:005930, US:AAPL, INDEX:KR:0001(코스피), INDEX:US:COMP(나스닥 종합). 분봉은 정규장만.
+    adjust: none 원주가, split 분할/병합 등 자본변동만, total 배당까지 (국내는 split 과 같음). 지수는 수정 없음.
+    결과는 기간 안의 최근 limit 개. 일봉 ts 는 거래일 0시(KST 표기), events 는 이 종목의 기업행위 목록.
+    """
+    from central.marketdata.history import HistoryStore, SeriesKey
+    from central.marketdata.history_cli import history_root
+
+    try:
+        key = SeriesKey.parse(symbol)
+    except ValueError as e:
+        raise OmsError("INVALID_REQUEST", str(e)) from None
+    store = HistoryStore(history_root(app.settings))
+    bars = store.read(key, interval, _as_dt(start) if start else None,
+                      _as_dt(end, end_of_day=True) if end else None, adjust)[-limit:]
+    return ok({"symbol": str(key), "interval": interval, "adjust": adjust,
+               "events": [e.to_json() for e in store.events(key)] if not key.index else [],
+               "candles": [{"ts": b.ts, "open": b.open, "high": b.high, "low": b.low, "close": b.close,
+                            "volume": b.volume} for b in bars]})
+
+
 @router.get("/status")
 def status(app: App, market: Literal["KR", "US"] | None = None):
     now = app.clock()

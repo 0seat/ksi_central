@@ -51,6 +51,18 @@ async with CentralClient(os.environ["CENTRAL_URL"], os.environ["CENTRAL_API_KEY"
 `/market/ticks`, `/market/calendar`, `/market/symbols` (SDK: `quote`, `orderbook`, `candles`, `ticks`, `calendar`, `symbols`).
 실시간 채널은 `tick:`, `orderbook:`, `candle.1m:`.
 
+### 과거 시세 보관소
+KIS 는 1분봉을 국내 약 1년, 미국 약 1개월만 보관하고 지수 1분봉은 최근 약 100개만 줍니다. 보관소는 이를 매일 받아
+`CENTRAL_HOME\data\history` 에 Parquet 로 쌓아, KIS 에서 사라진 뒤에도 쓸 수 있게 합니다.
+- **원주가만 저장**하고 분할, 병합, 무상증자, 배당은 **기업행위 이벤트**(기준일, 비율)로 따로 저장합니다.
+  이벤트는 KIS 원주가 일봉과 수정주가 일봉의 비율이 바뀌는 날에서 찾습니다. 조회할 때 `adjust` 로 고릅니다.
+  - `none` 원주가, `split` 분할/병합 등 자본변동만, `total` 배당까지 (국내 수정주가는 배당을 반영하지 않아 split 과 같음)
+- 조회: `/market/history/{symbol}?interval=1m|1d&adjust=...` (SDK: `history`). symbol 예: `KR:005930`, `US:AAPL`,
+  `INDEX:KR:0001`(코스피), `INDEX:KR:1001`(코스닥), `INDEX:US:COMP`(나스닥 종합), `INDEX:US:SPX`(S&P500)
+- 처음 받기: `python -m central history fetch KR:005930 US:AAPL INDEX:KR:0001` 또는 `--top-kr 10 --top-us 10`
+  (국내 1년치 1분봉은 종목당 약 15분). 이후 `central.toml` 의 `[history]` 목록은 장 마감 후 자동 갱신됩니다.
+- 확인: `python -m central history list`, `history events US:AAPL`, `history show US:AAPL --adjust split`
+
 ## 서버 실행
 ```powershell
 python -m central gen-admin-key   # 관리자 키 생성 (secrets.toml 에 기록, 화면에 출력하지 않음)

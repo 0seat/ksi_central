@@ -76,6 +76,15 @@ class Operations:
         if self._accounts("US"):
             add(Job("us_close", time(16, 20), self.us_close, tz=NEW_YORK, when=us_day,
                     description="미국 동기화, 미체결 소멸, 대사"))
+        hist = self.app.settings.history
+        if any(k.startswith("KR:") or k.startswith("INDEX:KR:") for k in hist.symbols + hist.indices):
+            add(Job("history_kr", time(16, 10), lambda: self.history("KR"), when=kr_day,
+                    description="국내 과거 시세 보관 (1분봉, 일봉, 기업행위)"))
+        if any(k.startswith("US:") or k.startswith("INDEX:US:") for k in hist.symbols + hist.indices):
+            add(Job("history_us", time(17, 0), lambda: self.history("US"), tz=NEW_YORK, when=us_day,
+                    description="미국 과거 시세 보관 (1분봉, 일봉, 기업행위)"))
+        if hist.indices:
+            self.scheduler.every("history_index", hist.index_minutes_every * 60, self.history_index_minutes)
 
     async def start(self) -> None:
         self.started_at = self.app.clock()
@@ -118,6 +127,65 @@ class Operations:
     def on_market(self, channel: str, item: object) -> None:
         if channel.startswith("dropped:"):
             self.notifier.error(f"시세 채널 중단 {channel.removeprefix('dropped:')}", str(item))
+
+    # ───────────── 과거 시세 보관 ─────────────
+    def _history_fetcher(self):
+        from central.marketdata.history import HistoryFetcher, HistoryStore
+        from central.marketdata.history_cli import _account, history_root
+
+        settings = self.app.settings
+        return HistoryFetcher(HistoryStore(history_root(settings)),
+                              lambda m: self.app.brokers[_account(settings, m)], clock=self.app.clock)
+
+    async def history(self, market: str) -> str:
+        """장 마감 후: 종목 1분봉/일봉/기업행위, 지수 일봉/1분봉. 새 기업행위가 생기면 알린다."""
+        from central.marketdata.history import SeriesKey
+
+        hist = self.app.settings.history
+        fetcher = self._history_fetcher()
+        failed, new_events, lines = [], [], []
+        for sym in [s for s in hist.symbols if s.startswith(f"{market}:")]:
+            key = SeriesKey.parse(sym)
+            inst = self.app.instruments.get(sym) or self.app.instruments.ensure(sym)
+            try:
+                before = len(fetcher.store.events(key))
+                m = await fetcher.minutes(inst)
+                d = await fetcher.daily(inst)
+                lines.append(f"{sym} 분봉 +{m['added']} 일봉 +{d['added']}")
+                if d["events"] > before:
+                    new_events += [f"{sym} {e.date} x{e.ratio} ({e.kind})" for e in fetcher.store.events(key)[before:]]
+            except Exception as e:
+                failed.append(f"{sym}: {type(e).__name__}: {e}")
+        for sym in [s for s in hist.indices if s.startswith(f"INDEX:{market}:")]:
+            try:
+                await fetcher.index_daily(SeriesKey.parse(sym))
+                await fetcher.index_minutes(SeriesKey.parse(sym))
+            except Exception as e:
+                failed.append(f"{sym}: {type(e).__name__}: {e}")
+        log.info("과거 시세 보관 %s: %s", market, "; ".join(lines))
+        if new_events:
+            self.notifier.warning(f"기업행위 감지 ({market})", "\n".join(new_events))
+        if failed:
+            raise RuntimeError("과거 시세 보관 일부 실패:\n" + "\n".join(failed))
+        return "\n".join(lines) or "지수만 갱신"
+
+    async def history_index_minutes(self) -> None:
+        """장중 지수 1분봉: KIS 가 최근 약 100개만 주므로 주기적으로 받아 쌓는다."""
+        from central.marketdata.history import SeriesKey
+
+        now = self.app.clock()
+        fetcher = None
+        for sym in self.app.settings.history.indices:
+            key = SeriesKey.parse(sym)
+            local = now.astimezone(key.zone)
+            hours = (time(9, 0), time(15, 45)) if key.market == "KR" else (time(9, 30), time(16, 5))
+            if not (self.app.hours.is_trading_day(key.market, local.date()) and hours[0] <= local.time() <= hours[1]):
+                continue
+            fetcher = fetcher or self._history_fetcher()
+            try:
+                await fetcher.index_minutes(key)
+            except Exception as e:
+                log.warning("지수 분봉 수집 실패 %s: %s", sym, e)
 
     # ───────────── 감시 ─────────────
     async def watch(self) -> None:
