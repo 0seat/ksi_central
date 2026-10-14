@@ -288,6 +288,25 @@ class KisBroker(Broker):
                     for r in _rows(body, "output2") if r.get("xymd")]
         return _candles(rows, end)
 
+    async def market_days(self, start: date, pages: int = 3) -> list[tuple[date, bool]]:
+        """국내 개장일 (CTCA0903R, 실전 전용). 1회 24일치, 같은 기준일에 ctx_area_fk/nk 와 tr_cont=N 으로 이어 받는다."""
+        if tr.KR_HOLIDAY.paper is None and self.profile.env == "paper":
+            raise BrokerUnavailable("모의투자는 휴장일 조회 미지원 (EGW02006)")
+        out: list[tuple[date, bool]] = []
+        fk = nk = tr_cont = ""
+        try:
+            for _ in range(pages):
+                resp = await self.rest.request(tr.KR_HOLIDAY, {
+                    "BASS_DT": start.strftime("%Y%m%d"), "CTX_AREA_FK": fk, "CTX_AREA_NK": nk}, tr_cont=tr_cont)
+                out += [(datetime.strptime(r["bass_dt"], "%Y%m%d").date(), r.get("opnd_yn") == "Y")
+                        for r in _rows(resp.body, "output") if r.get("bass_dt")]
+                if not resp.has_next:
+                    break
+                fk, nk, tr_cont = resp.body.get("ctx_area_fk", ""), resp.body.get("ctx_area_nk", ""), "N"
+        except (KisApiError, httpx.HTTPError) as e:
+            raise BrokerUnavailable(f"휴장일 조회 실패: {e}") from None
+        return out
+
     async def orderbook(self, instrument: Instrument) -> OrderBook:
         try:
             if instrument.market == "KR":

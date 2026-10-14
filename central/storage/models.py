@@ -188,7 +188,19 @@ class InstrumentRow(Base):
     exchange: Mapped[str] = mapped_column(String(8))
     name: Mapped[str] = mapped_column(String(80), default="")
     nxt_tradable: Mapped[bool] = mapped_column(Boolean, default=False)
+    kind: Mapped[str] = mapped_column(String(8), default="stock")      # stock / etf / etn / other
+    name_en: Mapped[str] = mapped_column(String(80), default="")
+    source: Mapped[str] = mapped_column(String(8), default="manual")   # manual / master
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
+
+
+class MarketDayRow(Base):
+    """거래소 개장일 (국내: KIS 휴장일 조회 CTCA0903R 결과). 없는 날짜는 평일=개장으로 추정한다."""
+    __tablename__ = "market_days"
+    market: Mapped[str] = mapped_column(String(4), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    open: Mapped[bool] = mapped_column(Boolean)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
 
 
 class CandleRow(Base):

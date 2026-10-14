@@ -185,6 +185,10 @@ class Broker(ABC):
     async def orderbook(self, instrument: Instrument) -> OrderBook:
         raise BrokerUnavailable(f"{type(self).__name__}: 호가 조회 미지원")
 
+    async def market_days(self, start: date, pages: int = 3) -> list[tuple[date, bool]]:
+        """국내 개장일 목록 (날짜, 개장 여부)."""
+        raise BrokerUnavailable(f"{type(self).__name__}: 개장일 조회 미지원")
+
     @abstractmethod
     async def order_statuses(self, market: str, day: date) -> list[BrokerOrderStatus]: ...
 

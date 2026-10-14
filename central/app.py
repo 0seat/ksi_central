@@ -17,7 +17,9 @@ from central.broker.kis.broker import KisBroker
 from central.core.events import EventBus
 from central.core.instruments import InstrumentRegistry
 from central.core.market_hours import MarketHours, now_kst
+from central.marketdata.calendar import CalendarService
 from central.marketdata.candles import CandleService
+from central.marketdata.master import fetch_master
 from central.marketdata.hub import MarketDataHub, RealtimeSource
 from central.marketdata.ticks import TickStore
 from central.oms.accounts import AccountService, record_event, tx
@@ -85,6 +87,31 @@ class CentralApp:
             self.ticks = TickStore(settings.ticks_dir, flush_seconds=settings.market_data.flush_seconds, clock=clock)
             self.market.listeners.append(self.ticks.on_market)
         self.candles = CandleService(self.db, self.data_broker, clock)
+        self.calendar = CalendarService(self.db, self.hours, self._kr_calendar_broker, clock)
+        self.calendar.apply()
+
+    def _kr_calendar_broker(self) -> Broker | None:
+        """국내 휴장일 조회(CTCA0903R)는 실전 계좌만 된다."""
+        return next((self.brokers[a] for a, p in self.profiles.items() if p.env == "real" and "KR" in p.markets), None)
+
+    async def refresh_master(self, markets: tuple[str, ...] = ("KR", "US")) -> dict[str, int]:
+        items = await fetch_master(self.http, markets)
+        n = self.catalog.bulk_load(items)
+        log.info("종목 마스터 적재 %d건 %s", n, self.catalog.counts())
+        return self.catalog.counts()
+
+    async def refresh_reference_data(self) -> None:
+        """휴장일(하루 한 번)과 종목 마스터(비어 있을 때). 실패해도 서버는 계속 뜬다."""
+        try:
+            await self.calendar.refresh_kr()
+        except Exception as e:
+            log.error("국내 휴장일 갱신 실패 (평일=개장으로 추정): %s", e)
+        self.calendar.apply()
+        if not self.catalog.has_master():
+            try:
+                await self.refresh_master()
+            except Exception as e:
+                log.error("종목 마스터 적재 실패 (국내는 자동 등록, 미국은 관리자 등록 필요): %s", e)
 
     def data_broker(self, market: str) -> Broker:
         """REST 시세/캔들/호가에 쓸 실계좌: 시세 허브와 같은 계좌, 없으면 해당 시장을 지원하는 실전 계좌 우선."""
@@ -102,6 +129,7 @@ class CentralApp:
         return list(self.profiles[alias].markets)
 
     async def start(self) -> None:
+        await self.refresh_reference_data()
         for alias, broker in self.brokers.items():
             await broker.start()
             await self.sync_all(alias)

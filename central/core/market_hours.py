@@ -2,7 +2,7 @@
 
 국내: 09:00–15:20 연속매매, 15:20–15:30 장마감 동시호가(설정으로 허용 여부 결정). 08:30–09:00 장전 동시호가는 거부.
 미국: 09:30–16:00 America/New_York (서머타임은 zoneinfo 가 처리).
-휴장일은 외부(M5 캘린더)에서 주입한다.
+휴장일과 미국 조기폐장은 central/marketdata/calendar.py 가 주입한다.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ def now_kst() -> datetime:
 class MarketHours:
     kr_allow_closing_auction: bool = True
     holidays: dict[str, set[date]] = field(default_factory=lambda: {"KR": set(), "US": set()})
+    us_early_close: dict[date, time] = field(default_factory=dict)   # 조기폐장일 → 마감 시각(ET)
 
     def can_place_order(self, market: str, at: datetime) -> tuple[bool, str]:
         if market == "KR":
@@ -42,7 +43,8 @@ class MarketHours:
             local = at.astimezone(NEW_YORK)
             if local.weekday() >= 5 or local.date() in self.holidays.get("US", set()):
                 return False, "미국 휴장일"
-            if _US_OPEN <= local.time() < _US_CLOSE:
+            close = self.us_early_close.get(local.date(), _US_CLOSE)
+            if _US_OPEN <= local.time() < close:
                 return True, ""
-            return False, "미국 정규장 시간 아님 (09:30–16:00 ET)"
+            return False, f"미국 정규장 시간 아님 (09:30–{close:%H:%M} ET)"
         return False, f"알 수 없는 시장 {market}"

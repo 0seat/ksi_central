@@ -1,7 +1,7 @@
 """데이터 API (/market) — docs/PLAN.md 8.4
 
 현재가와 호가는 실시간 수신 중이면 실시간 값, 아니면 REST. 캔들은 캐시 우선(central/marketdata/candles.py).
-영업일 캘린더는 M5 C단계에서 제공한다.
+종목코드에 '/' 가 들어갈 수 있어(예: US:BRK/B) 경로 파라미터는 path 형식이다.
 인증: 서브계좌 API 키 또는 관리자 키.
 """
 
@@ -45,7 +45,7 @@ def symbols(app: App, q: str = "", market: Literal["KR", "US"] | None = None, li
     return ok(app.catalog.search(q, market, max(1, min(limit, 500))))
 
 
-@router.get("/quote/{symbol}")
+@router.get("/quote/{symbol:path}")
 async def quote(app: App, symbol: str, source: Literal["auto", "realtime", "rest"] = "auto"):
     """auto: 실시간 수신 중이고 최근 체결이 REALTIME_FRESH_SEC 이내면 실시간 값, 아니면 REST 조회."""
     inst = app.catalog.resolve(symbol)
@@ -64,7 +64,7 @@ async def quote(app: App, symbol: str, source: Literal["auto", "realtime", "rest
                "upper_limit": q.upper_limit, "lower_limit": q.lower_limit, "ts": app.clock(), "source": "rest"})
 
 
-@router.get("/orderbook/{symbol}")
+@router.get("/orderbook/{symbol:path}")
 async def orderbook(app: App, symbol: str, source: Literal["auto", "realtime", "rest"] = "auto"):
     """10단계 호가. 미국은 무료 시세가 1호가뿐이라 1단계만 채워진다."""
     inst = app.catalog.resolve(symbol)
@@ -80,7 +80,7 @@ async def orderbook(app: App, symbol: str, source: Literal["auto", "realtime", "
     return ok({"symbol": inst.id, "ts": b.ts, "asks": b.asks, "bids": b.bids, "source": "rest"})
 
 
-@router.get("/candles/{symbol}")
+@router.get("/candles/{symbol:path}")
 async def candles(app: App, symbol: str, interval: str = "1d",
                   start: dt.datetime | dt.date | None = Query(default=None, alias="from"),
                   end: dt.datetime | dt.date | None = Query(default=None, alias="to"),
@@ -127,7 +127,7 @@ async def fx(app: App, pair: Literal["USDKRW"] = "USDKRW"):
     return ok({"pair": pair, "rate": rate, "ts": app.clock()})
 
 
-@router.get("/ticks/{symbol}")
+@router.get("/ticks/{symbol:path}")
 def ticks(app: App, symbol: str, date: dt.date | None = None, limit: int = Query(default=10000, ge=1, le=200000)):
     """저장된 틱 (기본: 오늘). 상시 수집(watchlist)이나 누군가 tick 채널을 구독하는 동안의 데이터만 있다."""
     if app.ticks is None:
@@ -137,8 +137,17 @@ def ticks(app: App, symbol: str, date: dt.date | None = None, limit: int = Query
 
 
 @router.get("/calendar")
-async def calendar():
-    raise OmsError("NOT_IMPLEMENTED", "영업일 캘린더는 M5 C단계에서 제공 예정")
+async def calendar(app: App, market: Literal["KR", "US"] = "KR",
+                   start: dt.date | None = Query(default=None, alias="from"),
+                   end: dt.date | None = Query(default=None, alias="to")):
+    """개장일. source: kis(KIS 휴장일 조회), weekday(아직 받지 않은 국내 날짜, 평일=개장 추정),
+    rule(미국 NYSE 규칙), manual(수동 반영). 미국 조기폐장일은 early_close_et."""
+    today = app.clock().date()
+    start = start or today
+    end = end or start + dt.timedelta(days=30)
+    if (end - start).days > 400:
+        raise OmsError("INVALID_REQUEST", "조회 기간은 400일 이내")
+    return ok({"market": market, "days": app.calendar.days(market, start, end)})
 
 
 def _as_dt(v: dt.datetime | dt.date, end_of_day: bool = False) -> dt.datetime:

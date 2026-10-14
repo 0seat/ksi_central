@@ -79,6 +79,8 @@ class SimBroker(Broker):
         self.candles: dict[tuple[str, str], list[Candle]] = {}
         self.candle_page_size = 120
         self.candle_calls = 0
+        self.kr_days: dict[date, bool] = {}
+        self.market_day_calls = 0
 
     # ───────────── 테스트 조작 ─────────────
     def deposit(self, currency: str, amount: Decimal) -> None:
@@ -212,6 +214,10 @@ class SimBroker(Broker):
         self.candle_calls += 1
         bars = [b for b in self.candles.get((instrument.id, interval), []) if b.ts <= end]
         return sorted(bars, key=lambda b: b.ts)[-self.candle_page_size:]
+
+    async def market_days(self, start: date, pages: int = 3) -> list[tuple[date, bool]]:
+        self.market_day_calls += 1
+        return [(d, o) for d, o in sorted(self.kr_days.items()) if d >= start]
 
     async def orderbook(self, instrument: Instrument) -> OrderBook:
         q = self.quotes.get(instrument.id)

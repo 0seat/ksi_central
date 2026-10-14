@@ -43,9 +43,12 @@ async with CentralClient(os.environ["CENTRAL_URL"], os.environ["CENTRAL_API_KEY"
     await a.buy("KR:005930", qty=10, price="61000")   # 지정가
     await a.buy("KR:005930", qty=1)                   # 가격 생략 시 시장가 (국내만)
     await a.balance()                                 # A의 잔고만 보입니다
-    async for msg in a.stream():                      # 주문/체결/잔고 이벤트 실시간 수신
+    async for msg in a.stream(["tick:KR:005930", "candle.1m:US:AAPL"]):  # 주문/체결/잔고 이벤트 + 시세
         print(msg["ch"], msg["data"])
 ```
+
+시세 데이터: `/market/quote`, `/market/orderbook`, `/market/candles?interval=1m|5m|15m|30m|60m|1d|1w|1M`,
+`/market/ticks`, `/market/calendar`, `/market/symbols`. 실시간 채널은 `tick:`, `orderbook:`, `candle.1m:`.
 
 ## 서버 실행
 ```powershell
@@ -65,7 +68,8 @@ python -m central serve           # API 서버 (처음 실행 시 실계좌 잔�
 | M2 | 서브계좌 코어 (원장, 주문 귀속, 상태머신) | 완료 |
 | M3 | KIS 주문 연동, 대사 | 완료 (국내 모의/실전 실거래 검증, 미국 실거래 검증 남음) |
 | M4 | API 서버 (REST + WebSocket, API 키, SDK) | 완료 (모의 계좌 SDK 실주문 검증) |
-| M5~ | 데이터 서비스, 운영, 전략 러너, 웹 대시보드 | 예정 |
+| M5 | 데이터 서비스 (실시간 시세 허브, 틱 저장, 캔들, 호가, 영업일, 종목 마스터) | 구현 완료 (1주 무중단 수집 검증은 M6 서비스 등록 후) |
+| M6~ | 운영(스케줄러, Windows 서비스, 알림), 전략 러너, 웹 대시보드 | 예정 |
 
 설계 상세: [docs/PLAN.md](docs/PLAN.md)
 

@@ -15,7 +15,8 @@ from central.core.money import Currency
 Market = Literal["KR", "US"]
 MARKET_CURRENCY: dict[str, Currency] = {"KR": "KRW", "US": "USD"}
 
-# KRX/NXT 주식 호가단위 (2023-01 개편, 유가/코스닥 공통). ETF/ETN 등은 별도 규칙 (M5에서 종목 유형별 처리)
+# KRX/NXT 주식 호가단위 (2023-01-25 개편, 유가/코스닥 공통. 2026-10-14 실시간 10단계 호가로 확인).
+# ETF/ETN 등은 별도 규칙이라 tick_size 에서 따로 처리한다.
 _KR_TICK_BANDS: list[tuple[Decimal, Decimal]] = [
     (Decimal("2000"), Decimal("1")),
     (Decimal("5000"), Decimal("5")),
@@ -35,6 +36,7 @@ class Instrument:
     exchange: str  # KRX / NASD / NYSE / AMEX
     name: str = ""
     nxt_tradable: bool = False
+    kind: str = "stock"   # stock / etf / etn / other (종목 마스터의 증권 구분)
 
     @property
     def currency(self) -> Currency:
@@ -46,6 +48,10 @@ class Instrument:
 
 
 def tick_size(instrument: Instrument, price: Decimal) -> Decimal:
+    if instrument.market == "KR" and instrument.kind != "stock":
+        # ETF/ETN 등은 주식과 호가단위 규칙이 다르고 정확한 표를 확인하지 못했다.
+        # 잘못 거부하지 않도록 원 단위만 검사하고 최종 판단은 KIS 에 맡긴다.  VERIFY
+        return Decimal("1")
     if instrument.market == "KR":
         for upper, tick in _KR_TICK_BANDS:
             if price < upper:

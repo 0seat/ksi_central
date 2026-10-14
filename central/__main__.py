@@ -4,6 +4,7 @@
     serve             API 서버 실행
     db upgrade        운영 DB 를 최신 스키마로
     db current        현재 스키마 리비전
+    master            KIS 종목 마스터 적재 (국내 코스피/코스닥, 미국 나스닥/뉴욕/아멕스)
     gen-admin-key     관리자 키를 생성해 secrets.toml 에 기록 (화면에 출력하지 않음)
 """
 
@@ -59,6 +60,30 @@ def _cmd_db(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_master(_: argparse.Namespace) -> int:
+    """종목 마스터를 받아 운영 DB 에 적재 (서버를 띄우지 않고)."""
+    import asyncio
+
+    from central.marketdata.master import fetch_master
+    from central.oms.catalog import InstrumentCatalog
+    from central.core.instruments import InstrumentRegistry
+    from central.storage.db import Database
+    import httpx
+
+    settings = load_settings()
+    db = Database.file(settings.data_dir / "central.db")
+    db.migrate()
+
+    async def run() -> list:
+        async with httpx.AsyncClient(timeout=60) as http:
+            return await fetch_master(http)
+
+    catalog = InstrumentCatalog(db, InstrumentRegistry())
+    n = catalog.bulk_load(asyncio.run(run()))
+    print(f"종목 마스터 {n}건 적재: {catalog.counts()}")
+    return 0
+
+
 def _cmd_gen_admin_key(args: argparse.Namespace) -> int:
     path = resolve_home() / "secrets" / "secrets.toml"
     if not path.is_file():
@@ -87,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     db = sub.add_parser("db", help="DB 스키마 관리")
     db.add_argument("action", choices=["upgrade", "current"])
     db.set_defaults(func=_cmd_db)
+    sub.add_parser("master", help="KIS 종목 마스터 적재").set_defaults(func=_cmd_master)
     gk = sub.add_parser("gen-admin-key", help="관리자 키 생성 후 secrets.toml 에 기록")
     gk.add_argument("--force", action="store_true", help="기존 키 교체")
     gk.set_defaults(func=_cmd_gen_admin_key)

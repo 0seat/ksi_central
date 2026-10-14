@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from central.api.common import App, Money, ok, require_admin
+from central.broker.base import BrokerUnavailable
 from central.oms import queries
 from central.oms.errors import OmsError
 from central.oms.fees import FeeRule
@@ -298,9 +299,36 @@ class InstrumentBody(_Body):
     exchange: Literal["KRX", "NASD", "NYSE", "AMEX"] | None = None
     name: str = Field(default="", max_length=80)
     nxt_tradable: bool = False
+    kind: Literal["stock", "etf", "etn", "other"] = "stock"
 
 
 @router.put("/instruments")
 def instrument_put(app: App, body: InstrumentBody):
+    """수동 등록/수정. 종목 마스터에 없는 종목이나 NXT 거래 가능 여부(마스터에 없음) 지정에 쓴다."""
     market, _, code = body.symbol.upper().partition(":")
-    return ok(app.catalog.upsert(market, code, body.exchange, body.name, body.nxt_tradable))
+    return ok(app.catalog.upsert(market, code, body.exchange, body.name, body.nxt_tradable, body.kind))
+
+
+class MasterRefreshBody(_Body):
+    markets: list[Literal["KR", "US"]] = Field(default_factory=lambda: ["KR", "US"])
+
+
+@router.post("/instruments/refresh-master")
+async def instrument_refresh_master(app: App, body: MasterRefreshBody | None = None):
+    """KIS 종목 마스터 파일을 받아 일괄 적재 (국내 코스피/코스닥, 미국 나스닥/뉴욕/아멕스)."""
+    markets = tuple(body.markets) if body else ("KR", "US")
+    try:
+        counts = await app.refresh_master(markets)
+    except Exception as e:
+        raise OmsError("BROKER_UNAVAILABLE", f"종목 마스터 다운로드 실패: {type(e).__name__}: {e}") from None
+    return ok({"counts": counts})
+
+
+@router.post("/calendar/refresh")
+async def calendar_refresh(app: App):
+    """국내 휴장일을 KIS 에서 즉시 다시 받는다 (평소에는 하루 한 번 자동)."""
+    try:
+        n = await app.calendar.refresh_kr(force=True)
+    except BrokerUnavailable as e:
+        raise OmsError("BROKER_UNAVAILABLE", str(e)) from None
+    return ok({"days": n, "kr_holidays_ahead": sorted(d for d in app.hours.holidays["KR"] if d >= app.clock().date())})
