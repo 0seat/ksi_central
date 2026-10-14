@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import httpx
 
@@ -111,11 +111,14 @@ async def _fetch(args: argparse.Namespace, settings: Settings) -> int:
 def _show(args: argparse.Namespace, settings: Settings) -> int:
     store = HistoryStore(history_root(settings))
     key = SeriesKey.parse(args.symbol)
-    start = datetime.fromisoformat(args.start).replace(tzinfo=KST) if args.start else None
-    end = datetime.fromisoformat(args.end).replace(tzinfo=KST) + timedelta(days=1) if args.end else None
+    # 날짜는 그 시장의 현지 날짜로 해석한다
+    start = datetime.fromisoformat(args.start).replace(tzinfo=key.zone) if args.start else None
+    end = datetime.fromisoformat(args.end).replace(tzinfo=key.zone, hour=23, minute=59, second=59) if args.end else None
     bars = store.read(key, args.interval, start, end, args.adjust)
     for b in bars[-args.tail:]:
-        print(f"{b.ts.astimezone(key.zone):%Y-%m-%d %H:%M} O {b.open} H {b.high} L {b.low} C {b.close} V {b.volume}")
+        # 일봉 ts 는 거래일 0시 KST, 분봉은 현지 시각으로 보인다
+        when = f"{b.ts.astimezone(KST):%Y-%m-%d}" if args.interval == "1d" else f"{b.ts.astimezone(key.zone):%Y-%m-%d %H:%M}"
+        print(f"{when} O {b.open} H {b.high} L {b.low} C {b.close} V {b.volume}")
     print(f"({len(bars)}개 중 마지막 {min(args.tail, len(bars))}개, adjust={args.adjust})")
     return 0
 

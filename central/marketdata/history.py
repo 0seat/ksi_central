@@ -109,11 +109,12 @@ def _tol(market: str, raw: Decimal, adj: Decimal) -> float:
 
 
 def _snap(k: Decimal, limit: int = 100) -> Fraction | None:
-    """분할/병합 비율이면 단순 분수로 (예: 0.24999 → 1/4). 0.5% 안에 맞는 분수가 없으면 None."""
+    """분할/병합 비율이면 단순 분수로 (예: 0.2499999 → 1/4). 0.05% 안에 맞는 분수가 없으면 None.
+    (GOOG 2014-04-03 클래스 C 배당은 0.5 에 0.1% 모자라 0.5% 기준이면 0.5 로 잘못 맞춰졌다)"""
     f = Fraction(str(k)).limit_denominator(limit)
     if f.numerator > limit or f.numerator <= 0:
         return None
-    return f if abs(float(f) / float(k) - 1) <= 0.005 else None
+    return f if abs(float(f) / float(k) - 1) <= 0.0005 else None
 
 
 def detect_events(raw: list[Candle], adj: list[Candle], market: str) -> list[Event]:
@@ -162,8 +163,10 @@ def detect_events(raw: list[Candle], adj: list[Candle], market: str) -> list[Eve
             events.append(Event(ex_date, (Decimal(frac.numerator) / Decimal(frac.denominator))
                                 .quantize(Decimal("1.0000000000")).normalize(), "split"))
         else:
-            # 국내 수정주가는 배당을 반영하지 않으므로 모두 자본변동. 미국은 단순 분수가 아니면 배당 등(total 에만 적용)
-            events.append(Event(ex_date, k, "split" if market == "KR" else "dividend"))
+            # 국내 수정주가는 배당을 반영하지 않으므로 모두 자본변동. 미국은 5% 넘게 바뀌면 자본변동(측정 비율 그대로),
+            # 그 이하는 배당 등 (total 에만 적용)
+            capital = market == "KR" or abs(float(k) - 1) > 0.05
+            events.append(Event(ex_date, k, "split" if capital else "dividend"))
     return sorted(events, key=lambda e: e.date)
 
 

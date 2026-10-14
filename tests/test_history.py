@@ -84,6 +84,15 @@ def test_kr_reverse_split_and_blip_ignored() -> None:
     assert events == [Event(raw[20].ts.date(), D(10), "split")]
 
 
+def test_near_fraction_capital_change_keeps_measured_ratio() -> None:
+    """0.5 에 0.1% 모자란 자본변동(GOOG 2014 클래스 C 배당)은 0.5 로 맞추지 않고 측정값으로, 종류는 split."""
+    raw = series(date(2014, 3, 3), ["1200"] * 20 + ["600"] * 20)
+    adj = scaled(raw, [D("0.4995")] * 20 + [D(1)] * 20, "0.0001")
+    ev = detect_events(raw, adj, "US")
+    assert len(ev) == 1 and ev[0].kind == "split" and abs(ev[0].ratio - D("0.4995")) < D("0.000001")
+    assert reconstruction_error(raw, adj, ev, "US")["days_off"] == 0
+
+
 def test_no_events_when_ratio_constant() -> None:
     raw = series(date(2025, 1, 2), [str(100 + i % 7) for i in range(50)])
     assert detect_events(raw, scaled(raw, [D(1)] * 50, "0.0001"), "US") == []

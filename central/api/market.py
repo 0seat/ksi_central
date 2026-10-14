@@ -148,8 +148,13 @@ def history(app: App, symbol: str, interval: Literal["1m", "1d"] = "1d",
     except ValueError as e:
         raise OmsError("INVALID_REQUEST", str(e)) from None
     store = HistoryStore(history_root(app.settings))
-    bars = store.read(key, interval, _as_dt(start) if start else None,
-                      _as_dt(end, end_of_day=True) if end else None, adjust)[-limit:]
+
+    def local(v, end_of_day=False):   # 날짜만 주면 그 시장의 현지 날짜로
+        if v is None or isinstance(v, dt.datetime):
+            return _as_dt(v, end_of_day) if v else None
+        return dt.datetime.combine(v, dt.time.max if end_of_day else dt.time.min, key.zone)
+
+    bars = store.read(key, interval, local(start), local(end, True), adjust)[-limit:]
     return ok({"symbol": str(key), "interval": interval, "adjust": adjust,
                "events": [e.to_json() for e in store.events(key)] if not key.index else [],
                "candles": [{"ts": b.ts, "open": b.open, "high": b.high, "low": b.low, "close": b.close,
