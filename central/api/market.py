@@ -1,6 +1,7 @@
 """데이터 API (/market) — docs/PLAN.md 8.4
 
-현재가(실시간 캐시 우선), 장 상태, 환율, 종목 검색, 저장 틱. 호가/캔들/영업일은 M5 후속 단계에서 제공한다.
+현재가와 호가는 실시간 수신 중이면 실시간 값, 아니면 REST. 캔들은 캐시 우선(central/marketdata/candles.py).
+영업일 캘린더는 M5 C단계에서 제공한다.
 인증: 서브계좌 API 키 또는 관리자 키.
 """
 
@@ -13,7 +14,8 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Header, Query, Request
 
 from central.api.common import ApiError, App, ok
-from central.broker.base import Broker, BrokerUnavailable
+from central.broker.base import BrokerUnavailable
+from central.marketdata.candles import INTERVALS, MINUTE_INTERVALS
 from central.oms.errors import OmsError
 
 
@@ -28,21 +30,14 @@ def require_any(request: Request, x_api_key: Annotated[str | None, Header()] = N
 
 
 REALTIME_FRESH_SEC = 10
+# from 을 생략했을 때 조회 기간
+_DEFAULT_SPAN = {"1d": dt.timedelta(days=200), "1w": dt.timedelta(days=3 * 365), "1M": dt.timedelta(days=10 * 365)}
 
 router = APIRouter(prefix="/market", tags=["market"], dependencies=[Depends(require_any)])
 
 
-def data_broker(app, market: str) -> Broker:
-    """REST 시세 조회에 쓸 실계좌: 시세 허브와 같은 계좌, 없으면 해당 시장을 지원하는 실전 계좌 우선."""
-    try:
-        return app.brokers[app.market.source_account(market)]
-    except OmsError:
-        pass
-    candidates = [a for a, p in app.profiles.items() if market in p.markets]
-    if not candidates:
-        raise OmsError("MARKET_NOT_SUPPORTED", f"{market} 을 지원하는 실계좌 없음")
-    candidates.sort(key=lambda a: app.profiles[a].env != "real")
-    return app.brokers[candidates[0]]
+def _fresh(app, ts: dt.datetime) -> bool:
+    return (app.clock() - ts).total_seconds() <= REALTIME_FRESH_SEC
 
 
 @router.get("/symbols")
@@ -55,29 +50,63 @@ async def quote(app: App, symbol: str, source: Literal["auto", "realtime", "rest
     """auto: 실시간 수신 중이고 최근 체결이 REALTIME_FRESH_SEC 이내면 실시간 값, 아니면 REST 조회."""
     inst = app.catalog.resolve(symbol)
     tick = app.market.last_tick.get(inst.id)
-    now = app.clock()
-    fresh = tick is not None and (now - tick.ts).total_seconds() <= REALTIME_FRESH_SEC
-    if source == "realtime" or (source == "auto" and fresh):
+    if source == "realtime" or (source == "auto" and tick is not None and _fresh(app, tick.ts)):
         if tick is None:
             raise OmsError("NOT_FOUND", f"{inst.id} 실시간 체결 수신 기록 없음 (tick 채널 구독 필요)")
         return ok({"symbol": inst.id, "currency": inst.currency, "last": tick.price, "bid": tick.bid,
                    "ask": tick.ask, "cum_volume": tick.cum_volume, "venue": tick.venue, "ts": tick.ts,
                    "source": "realtime"})
     try:
-        q = await data_broker(app, inst.market).quote(inst)
+        q = await app.data_broker(inst.market).quote(inst)
     except BrokerUnavailable as e:
         raise OmsError("BROKER_UNAVAILABLE", str(e)) from None
     return ok({"symbol": inst.id, "currency": inst.currency, "last": q.last,
-               "upper_limit": q.upper_limit, "lower_limit": q.lower_limit, "ts": now, "source": "rest"})
+               "upper_limit": q.upper_limit, "lower_limit": q.lower_limit, "ts": app.clock(), "source": "rest"})
 
 
-@router.get("/ticks/{symbol}")
-def ticks(app: App, symbol: str, date: dt.date | None = None, limit: int = Query(default=10000, ge=1, le=200000)):
-    """저장된 틱 (기본: 오늘). 상시 수집(watchlist)이나 누군가 tick 채널을 구독하는 동안의 데이터만 있다."""
-    if app.ticks is None:
-        raise OmsError("NOT_IMPLEMENTED", "틱 저장이 꺼져 있음 (market_data.store_ticks)")
+@router.get("/orderbook/{symbol}")
+async def orderbook(app: App, symbol: str, source: Literal["auto", "realtime", "rest"] = "auto"):
+    """10단계 호가. 미국은 무료 시세가 1호가뿐이라 1단계만 채워진다."""
     inst = app.catalog.resolve(symbol)
-    return ok({"symbol": inst.id, "rows": app.ticks.read(inst.id, date or app.clock().date(), limit)})
+    book = app.market.last_book.get(inst.id)
+    if source == "realtime" or (source == "auto" and book is not None and _fresh(app, book.ts)):
+        if book is None:
+            raise OmsError("NOT_FOUND", f"{inst.id} 실시간 호가 수신 기록 없음 (orderbook 채널 구독 필요)")
+        return ok({"symbol": inst.id, "ts": book.ts, "asks": book.asks, "bids": book.bids, "source": "realtime"})
+    try:
+        b = await app.data_broker(inst.market).orderbook(inst)
+    except BrokerUnavailable as e:
+        raise OmsError("BROKER_UNAVAILABLE", str(e)) from None
+    return ok({"symbol": inst.id, "ts": b.ts, "asks": b.asks, "bids": b.bids, "source": "rest"})
+
+
+@router.get("/candles/{symbol}")
+async def candles(app: App, symbol: str, interval: str = "1d",
+                  start: dt.datetime | dt.date | None = Query(default=None, alias="from"),
+                  end: dt.datetime | dt.date | None = Query(default=None, alias="to"),
+                  limit: int = Query(default=500, ge=1, le=5000)):
+    """봉 시각은 시작 시각(KST). 일/주/월봉은 거래일 0시(KST 표기). 분봉은 정규장만.
+
+    from 생략 시: 분봉은 to 기준 하루 전부터, 일봉 200일, 주봉 3년, 월봉 10년. 결과는 최근 limit 개.
+    """
+    if interval not in INTERVALS:
+        raise OmsError("INVALID_REQUEST", f"interval 은 {INTERVALS} 중 하나")
+    inst = app.catalog.resolve(symbol)
+    now = app.clock()
+    end_dt = _as_dt(end, end_of_day=True) if end else now
+    if start:
+        start_dt = _as_dt(start)
+    else:
+        start_dt = end_dt - (dt.timedelta(days=1) if interval in MINUTE_INTERVALS else _DEFAULT_SPAN[interval])
+    try:
+        result = await app.candles.get(inst, interval, start_dt, end_dt)
+    except BrokerUnavailable as e:
+        raise OmsError("BROKER_UNAVAILABLE", str(e)) from None
+    bars = result.candles[-limit:]
+    return ok({"symbol": inst.id, "interval": interval, "currency": inst.currency, "truncated": result.truncated,
+               "candles": [{"ts": b.ts, "open": b.open, "high": b.high, "low": b.low, "close": b.close,
+                            "volume": b.volume} for b in bars]})
+
 
 @router.get("/status")
 def status(app: App, market: Literal["KR", "US"] | None = None):
@@ -92,18 +121,29 @@ def status(app: App, market: Literal["KR", "US"] | None = None):
 @router.get("/fx")
 async def fx(app: App, pair: Literal["USDKRW"] = "USDKRW"):
     try:
-        rate = await data_broker(app, "US").fx_rate(pair)
+        rate = await app.data_broker("US").fx_rate(pair)
     except BrokerUnavailable as e:
         raise OmsError("BROKER_UNAVAILABLE", str(e)) from None
     return ok({"pair": pair, "rate": rate, "ts": app.clock()})
 
 
-def _m5(name: str):
-    async def handler(symbol: str = ""):
-        raise OmsError("NOT_IMPLEMENTED", f"{name} 는 M5 데이터 서비스에서 제공 예정")
-    return handler
+@router.get("/ticks/{symbol}")
+def ticks(app: App, symbol: str, date: dt.date | None = None, limit: int = Query(default=10000, ge=1, le=200000)):
+    """저장된 틱 (기본: 오늘). 상시 수집(watchlist)이나 누군가 tick 채널을 구독하는 동안의 데이터만 있다."""
+    if app.ticks is None:
+        raise OmsError("NOT_IMPLEMENTED", "틱 저장이 꺼져 있음 (market_data.store_ticks)")
+    inst = app.catalog.resolve(symbol)
+    return ok({"symbol": inst.id, "rows": app.ticks.read(inst.id, date or app.clock().date(), limit)})
 
 
-router.add_api_route("/orderbook/{symbol}", _m5("호가"), methods=["GET"])
-router.add_api_route("/candles/{symbol}", _m5("캔들"), methods=["GET"])
-router.add_api_route("/calendar", _m5("영업일"), methods=["GET"])
+@router.get("/calendar")
+async def calendar():
+    raise OmsError("NOT_IMPLEMENTED", "영업일 캘린더는 M5 C단계에서 제공 예정")
+
+
+def _as_dt(v: dt.datetime | dt.date, end_of_day: bool = False) -> dt.datetime:
+    from central.core.market_hours import KST
+
+    if isinstance(v, dt.datetime):
+        return v if v.tzinfo else v.replace(tzinfo=KST)
+    return dt.datetime.combine(v, dt.time.max if end_of_day else dt.time.min, KST)

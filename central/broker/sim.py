@@ -27,6 +27,8 @@ from central.broker.base import (
     BrokerOrderRequest,
     BrokerReject,
     BrokerUnavailable,
+    Candle,
+    OrderBook,
     Quote,
 )
 from central.core.instruments import Instrument
@@ -74,6 +76,9 @@ class SimBroker(Broker):
         self.drop_ack_next: bool = False      # 접수는 됐는데 응답이 유실됨
         self._seq = itertools.count(1)
         self._fill_seq = itertools.count(1)
+        self.candles: dict[tuple[str, str], list[Candle]] = {}
+        self.candle_page_size = 120
+        self.candle_calls = 0
 
     # ───────────── 테스트 조작 ─────────────
     def deposit(self, currency: str, amount: Decimal) -> None:
@@ -201,3 +206,15 @@ class SimBroker(Broker):
 
     async def fx_rate(self, pair: str = "USDKRW") -> Decimal:
         return self.fx
+
+    async def candle_page(self, instrument: Instrument, interval: str, end: datetime) -> list[Candle]:
+        """set_candles 로 넣은 봉 중 end 이전 최근 page_size 개 (KIS 처럼 페이지 단위)."""
+        self.candle_calls += 1
+        bars = [b for b in self.candles.get((instrument.id, interval), []) if b.ts <= end]
+        return sorted(bars, key=lambda b: b.ts)[-self.candle_page_size:]
+
+    async def orderbook(self, instrument: Instrument) -> OrderBook:
+        q = self.quotes.get(instrument.id)
+        if q is None:
+            raise BrokerUnavailable(f"sim: {instrument.id} 시세 없음")
+        return OrderBook(self.clock(), [(q.last, 10)], [(q.last, 10)])

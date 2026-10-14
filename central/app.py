@@ -17,6 +17,7 @@ from central.broker.kis.broker import KisBroker
 from central.core.events import EventBus
 from central.core.instruments import InstrumentRegistry
 from central.core.market_hours import MarketHours, now_kst
+from central.marketdata.candles import CandleService
 from central.marketdata.hub import MarketDataHub, RealtimeSource
 from central.marketdata.ticks import TickStore
 from central.oms.accounts import AccountService, record_event, tx
@@ -83,6 +84,19 @@ class CentralApp:
         if settings.market_data.store_ticks:
             self.ticks = TickStore(settings.ticks_dir, flush_seconds=settings.market_data.flush_seconds, clock=clock)
             self.market.listeners.append(self.ticks.on_market)
+        self.candles = CandleService(self.db, self.data_broker, clock)
+
+    def data_broker(self, market: str) -> Broker:
+        """REST 시세/캔들/호가에 쓸 실계좌: 시세 허브와 같은 계좌, 없으면 해당 시장을 지원하는 실전 계좌 우선."""
+        try:
+            return self.brokers[self.market.source_account(market)]
+        except OmsError:
+            pass
+        candidates = sorted((a for a, p in self.profiles.items() if market in p.markets),
+                            key=lambda a: self.profiles[a].env != "real")
+        if not candidates:
+            raise OmsError("MARKET_NOT_SUPPORTED", f"{market} 을 지원하는 실계좌 없음")
+        return self.brokers[candidates[0]]
 
     def markets_of(self, alias: str) -> list[str]:
         return list(self.profiles[alias].markets)

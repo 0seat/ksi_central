@@ -73,7 +73,7 @@ async def env(home: Path):
 def test_migrations_match_models(tmp_path: Path) -> None:
     db = Database.file(tmp_path / "m.db")
     db.migrate()
-    assert migrate.current(db.engine) == "0002_api_keys_instruments"
+    assert migrate.current(db.engine) == migrate.head() == "0003_candles"
     with db.engine.connect() as conn:
         diffs = compare_metadata(MigrationContext.configure(conn), Base.metadata)
     assert diffs == []
@@ -81,12 +81,13 @@ def test_migrations_match_models(tmp_path: Path) -> None:
 
 def test_legacy_create_all_db_is_stamped_and_upgraded(tmp_path: Path) -> None:
     db = Database.file(tmp_path / "legacy.db")
-    legacy = [t for name, t in Base.metadata.tables.items() if name not in ("api_keys", "instruments")]
+    legacy = [t for name, t in Base.metadata.tables.items()
+              if name not in ("api_keys", "instruments", "candles", "candle_coverage")]
     Base.metadata.create_all(db.engine, tables=legacy)  # M3 까지의 DB
     db.migrate()
     tables = set(inspect(db.engine).get_table_names())
-    assert {"api_keys", "instruments", "orders"} <= tables
-    assert migrate.current(db.engine) == "0002_api_keys_instruments"
+    assert {"api_keys", "instruments", "candles", "orders"} <= tables
+    assert migrate.current(db.engine) == migrate.head()
 
 
 # ───────────── 설정 ─────────────
@@ -269,7 +270,7 @@ async def test_market_endpoints(env: Env) -> None:
     st = (await env.http.get("/market/status", headers=h)).json()["data"]["markets"]
     assert st["KR"]["accepting_orders"] is True and st["US"]["accepting_orders"] is False
     assert (await env.http.get("/market/fx", headers=ADMIN)).json()["data"]["rate"] == "1400"
-    res = await env.http.get("/market/candles/KR:005930", headers=h)
+    res = await env.http.get("/market/calendar", headers=h)
     assert res.status_code == 501 and res.json()["error"]["code"] == "NOT_IMPLEMENTED"
     assert (await env.http.get("/market/status")).status_code == 401
 

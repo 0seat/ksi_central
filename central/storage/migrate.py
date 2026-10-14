@@ -37,6 +37,14 @@ def upgrade(engine: Engine, revision: str = "head") -> None:
         command.upgrade(cfg, revision)
 
 
+def head() -> str:
+    from alembic.script import ScriptDirectory
+
+    cfg = Config()
+    cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
+    return ScriptDirectory.from_config(cfg).get_current_head()  # type: ignore[return-value]
+
+
 def current(engine: Engine) -> str | None:
     with engine.connect() as conn:
         if "alembic_version" not in inspect(conn).get_table_names():

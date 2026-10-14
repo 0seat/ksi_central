@@ -1,7 +1,7 @@
 """시세 구독 허브 (docs/PLAN.md 7.1).
 
-- 채널: "tick:KR:005930", "orderbook:US:AAPL"
-- 같은 채널을 여러 클라이언트가 구독해도 KIS 등록은 한 건 (참조 카운트)
+- 채널: "tick:KR:005930", "orderbook:US:AAPL", "candle.1m:KR:005930" (체결로 만드는 실시간 1분봉)
+- 같은 채널을 여러 클라이언트가 구독해도 KIS 등록은 한 건 (채널 참조 + KIS 등록 참조, tick 과 candle.1m 은 등록 공유)
 - 시장마다 시세를 받을 계좌를 하나 정한다 (settings.market_data). 그 계좌의 공유 실시간 세션에 등록한다
 - 국내 체결/호가 TR: 계좌가 SOR(통합 경로)을 지원하면 통합(H0UNCNT0/H0UNASP0), 아니면 KRX
 - 등록 한도를 넘으면 SUBSCRIPTION_LIMIT
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Protocol
@@ -29,7 +29,7 @@ from central.settings import AccountProfile, MarketDataConfig
 
 log = logging.getLogger(__name__)
 
-KINDS = ("tick", "orderbook")
+KINDS = ("tick", "orderbook", "candle.1m")
 Listener = Callable[[str, object], None]   # (channel, Tick | Book)
 
 
@@ -42,6 +42,18 @@ class RealtimeSource(Protocol):
 
 
 @dataclass(frozen=True)
+class LiveBar:
+    symbol: str
+    ts: datetime          # 봉 시작 시각
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: int
+    closed: bool
+
+
+@dataclass(frozen=True)
 class Feed:
     alias: str
     tr_id: str
@@ -51,7 +63,7 @@ class Feed:
 def parse_channel(channel: str) -> tuple[str, str]:
     kind, _, symbol = channel.partition(":")
     if kind not in KINDS or ":" not in symbol:
-        raise OmsError("INVALID_REQUEST", f"채널 형식은 tick:KR:005930 / orderbook:US:AAPL: {channel}")
+        raise OmsError("INVALID_REQUEST", f"채널 형식은 tick:KR:005930 / orderbook:US:AAPL / candle.1m:KR:005930: {channel}")
     return kind, symbol.upper()
 
 
@@ -63,6 +75,8 @@ class MarketDataHub:
         self.config = config
         self._refs: dict[str, int] = {}
         self._feeds: dict[str, Feed] = {}
+        self._feed_refs: dict[Feed, int] = {}
+        self.bars: dict[str, LiveBar] = {}   # 종목별 진행 중인 1분봉
         self._lock = asyncio.Lock()
         self.listeners: list[Listener] = []
         self.last_tick: dict[str, rt.Tick] = {}
@@ -86,12 +100,12 @@ class MarketDataHub:
         alias = self.source_account(inst.market)
         if inst.market == "KR":
             unified = "SOR" in self.profiles[alias].kr_routes
-            if kind == "tick":
+            if kind != "orderbook":
                 tr_id = tr.WS_KR_TICK_UNIFIED if unified else tr.WS_KR_TICK_KRX
             else:
                 tr_id = tr.WS_KR_ORDERBOOK_UNIFIED if unified else tr.WS_KR_ORDERBOOK_KRX
             return Feed(alias, tr_id, inst.code)
-        tr_id = tr.WS_US_TICK if kind == "tick" else tr.WS_US_ORDERBOOK
+        tr_id = tr.WS_US_ORDERBOOK if kind == "orderbook" else tr.WS_US_TICK
         return Feed(alias, tr_id, tr.us_ws_key(inst.exchange, inst.code))
 
     # ───────────── 구독 ─────────────
@@ -103,16 +117,18 @@ class MarketDataHub:
         async with self._lock:
             if self._refs.get(channel, 0) == 0:
                 feed = self.feed(kind, inst)
-                src = self.sources[feed.alias]
-                src.set_handler(feed.tr_id, self._handler(feed.tr_id))
-                try:
-                    await src.add(feed.tr_id, feed.tr_key, "data")
-                except SubscriptionLimit as e:
-                    raise OmsError("SUBSCRIPTION_LIMIT", str(e)) from None
-                except KisWsError as e:
-                    raise OmsError("BROKER_UNAVAILABLE", str(e)) from None
+                if self._feed_refs.get(feed, 0) == 0:
+                    src = self.sources[feed.alias]
+                    src.set_handler(feed.tr_id, self._handler(feed.tr_id))
+                    try:
+                        await src.add(feed.tr_id, feed.tr_key, "data")
+                    except SubscriptionLimit as e:
+                        raise OmsError("SUBSCRIPTION_LIMIT", str(e)) from None
+                    except KisWsError as e:
+                        raise OmsError("BROKER_UNAVAILABLE", str(e)) from None
+                    log.info("시세 등록 %s:%s (%s)", feed.tr_id, feed.tr_key, feed.alias)
+                self._feed_refs[feed] = self._feed_refs.get(feed, 0) + 1
                 self._feeds[channel] = feed
-                log.info("시세 등록 %s (%s %s:%s)", channel, feed.alias, feed.tr_id, feed.tr_key)
             self._refs[channel] = self._refs.get(channel, 0) + 1
         return channel
 
@@ -126,9 +142,15 @@ class MarketDataHub:
                 return
             self._refs.pop(channel, None)
             feed = self._feeds.pop(channel, None)
-            if feed is not None:
-                await self.sources[feed.alias].remove(feed.tr_id, feed.tr_key)
-                log.info("시세 해제 %s", channel)
+            if feed is None:
+                return
+            left = self._feed_refs.get(feed, 1) - 1
+            if left > 0:
+                self._feed_refs[feed] = left
+                return
+            self._feed_refs.pop(feed, None)
+            await self.sources[feed.alias].remove(feed.tr_id, feed.tr_key)
+            log.info("시세 해제 %s:%s (%s)", feed.tr_id, feed.tr_key, feed.alias)
 
     async def start_watchlist(self) -> None:
         for symbol in self.config.watchlist:
@@ -162,16 +184,41 @@ class MarketDataHub:
                     continue
                 if isinstance(item, rt.Tick):
                     self.last_tick[item.symbol] = item
-                    channel = f"tick:{item.symbol}"
+                    self._publish(f"tick:{item.symbol}", item)
+                    candle_ch = f"candle.1m:{item.symbol}"
+                    for bar in self._update_bar(item):
+                        if self._refs.get(candle_ch):
+                            self._publish(candle_ch, bar)
                 else:
                     self.last_book[item.symbol] = item
-                    channel = f"orderbook:{item.symbol}"
-                for listener in self.listeners:
-                    try:
-                        listener(channel, item)
-                    except Exception:
-                        log.exception("시세 리스너 오류 %s", channel)
+                    self._publish(f"orderbook:{item.symbol}", item)
         return handle
+
+    def _publish(self, channel: str, item: object) -> None:
+        for listener in self.listeners:
+            try:
+                listener(channel, item)
+            except Exception:
+                log.exception("시세 리스너 오류 %s", channel)
+
+    def _update_bar(self, t: rt.Tick) -> list[LiveBar]:
+        """체결로 1분봉 갱신. 분이 바뀌면 직전 봉을 closed=True 로 먼저 내보낸다. 봉 시각은 시작 시각."""
+        start = t.ts.replace(second=0, microsecond=0)
+        cur = self.bars.get(t.symbol)
+        out: list[LiveBar] = []
+        if cur is not None and start < cur.ts:
+            return out  # 늦게 온 체결은 무시
+        if cur is not None and start > cur.ts:
+            out.append(replace(cur, closed=True))
+            cur = None
+        if cur is None:
+            cur = LiveBar(t.symbol, start, t.price, t.price, t.price, t.price, t.qty, False)
+        else:
+            cur = replace(cur, high=max(cur.high, t.price), low=min(cur.low, t.price), close=t.price,
+                          volume=cur.volume + t.qty)
+        self.bars[t.symbol] = cur
+        out.append(cur)
+        return out
 
     @staticmethod
     def _parse(tr_id: str, rec: list[str], today):
@@ -187,13 +234,11 @@ class MarketDataHub:
 
     def _dropped(self, alias: str, tr_id: str, tr_key: str, reason: str) -> None:
         """재연결 후 KIS 가 등록을 거부한 시세: 채널 상태를 지우고 알린다."""
+        dropped = Feed(alias, tr_id, tr_key)
+        self._feed_refs.pop(dropped, None)
         for channel, feed in list(self._feeds.items()):
-            if feed == Feed(alias, tr_id, tr_key):
+            if feed == dropped:
                 self._feeds.pop(channel, None)
                 self._refs.pop(channel, None)
                 log.error("시세 채널 중단 %s: %s", channel, reason)
-                for listener in self.listeners:
-                    try:
-                        listener(f"dropped:{channel}", reason)
-                    except Exception:
-                        log.exception("시세 리스너 오류")
+                self._publish(f"dropped:{channel}", reason)

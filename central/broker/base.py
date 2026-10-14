@@ -56,6 +56,27 @@ class Quote:
 
 
 @dataclass(frozen=True)
+class Candle:
+    """봉. ts 는 봉 시작 시각(KST). 일/주/월봉은 해당 시장 거래일 0시(KST 표기)."""
+    ts: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: int
+
+
+@dataclass(frozen=True)
+class OrderBook:
+    ts: datetime
+    asks: list[tuple[Decimal, int]]   # 가까운 호가부터
+    bids: list[tuple[Decimal, int]]
+
+
+CANDLE_BASES = ("1m", "1d", "1w", "1M")
+
+
+@dataclass(frozen=True)
 class BrokerFill:
     broker_order_no: str
     fill_key: str          # 체결 고유키 (중복 통보 제거용)
@@ -155,6 +176,14 @@ class Broker(ABC):
 
     @abstractmethod
     async def fx_rate(self, pair: str = "USDKRW") -> Decimal: ...
+
+    async def candle_page(self, instrument: Instrument, interval: str, end: datetime) -> list[Candle]:
+        """end 이전(포함) 봉 한 페이지를 오래된 순으로. interval 은 CANDLE_BASES 중 하나.
+        분봉에는 시간외 봉이 섞일 수 있다 (정규장 필터는 CandleService 가 한다)."""
+        raise BrokerUnavailable(f"{type(self).__name__}: 캔들 조회 미지원")
+
+    async def orderbook(self, instrument: Instrument) -> OrderBook:
+        raise BrokerUnavailable(f"{type(self).__name__}: 호가 조회 미지원")
 
     @abstractmethod
     async def order_statuses(self, market: str, day: date) -> list[BrokerOrderStatus]: ...

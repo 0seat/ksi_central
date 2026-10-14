@@ -24,6 +24,8 @@ from central.broker.base import (
     BrokerOrderStatus,
     BrokerReject,
     BrokerUnavailable,
+    Candle,
+    OrderBook,
     Quote,
 )
 from central.broker.kis import tr
@@ -33,7 +35,7 @@ from central.broker.kis.rest import PAGE_100, PAGE_200, KisApiError, KisRestClie
 from central.broker.kis.session import KisWsSession
 from central.broker.kis.ws import RealtimeMessage
 from central.core.instruments import Instrument
-from central.core.market_hours import now_kst
+from central.core.market_hours import KST, NEW_YORK, now_kst
 from central.core.money import ZERO
 from central.settings import Account
 
@@ -58,6 +60,12 @@ def _rows(body: dict, key: str) -> list[dict]:
     if out is None:
         return []
     return out if isinstance(out, list) else [out]
+
+
+def _candles(rows: list[tuple], end: datetime) -> list[Candle]:
+    out = [Candle(ts, _d(o), _d(h), _d(lo), _d(c), _i(v)) for ts, o, h, lo, c, v in rows if ts <= end and _d(c) > 0]
+    out.sort(key=lambda x: x.ts)
+    return out
 
 
 class KisBroker(Broker):
@@ -221,6 +229,80 @@ class KisBroker(Broker):
                 self._fx = (rate, time.monotonic())
                 return rate
         raise BrokerUnavailable("USD 기준환율 없음")
+
+    # ───────────── 캔들 / 호가 ─────────────
+    def _kr_mkt(self) -> str:
+        return "UN" if {"NXT", "SOR"} & set(self.profile.kr_routes) else "J"
+
+    async def candle_page(self, instrument: Instrument, interval: str, end: datetime) -> list[Candle]:
+        """KIS 응답은 최신부터 오므로 뒤집어 오래된 순으로 돌려준다. 봉 시각은 시작 시각 (2026-10-14 실측)."""
+        end = end.astimezone(KST)
+        try:
+            if instrument.market == "KR":
+                return await self._kr_candles(instrument, interval, end)
+            return await self._us_candles(instrument, interval, end)
+        except (KisApiError, httpx.HTTPError) as e:
+            raise BrokerUnavailable(f"캔들 조회 실패: {e}") from None
+
+    async def _kr_candles(self, inst: Instrument, interval: str, end: datetime) -> list[Candle]:
+        if interval == "1m":
+            body = (await self.rest.request(tr.KR_MINUTE_DAILY, {
+                "FID_COND_MRKT_DIV_CODE": self._kr_mkt(), "FID_INPUT_ISCD": inst.code,
+                "FID_INPUT_HOUR_1": end.strftime("%H%M%S"), "FID_INPUT_DATE_1": end.strftime("%Y%m%d"),
+                "FID_PW_DATA_INCU_YN": "Y", "FID_FAKE_TICK_INCU_YN": ""})).body
+            rows = [(datetime.strptime(r["stck_bsop_date"] + r["stck_cntg_hour"], "%Y%m%d%H%M%S").replace(tzinfo=KST),
+                     r["stck_oprc"], r["stck_hgpr"], r["stck_lwpr"], r["stck_prpr"], r["cntg_vol"])
+                    for r in _rows(body, "output2") if r.get("stck_bsop_date")]
+        else:
+            span = {"1d": 150, "1w": 1000, "1M": 4000}[interval]
+            body = (await self.rest.request(tr.KR_DAILY_CHART, {
+                "FID_COND_MRKT_DIV_CODE": self._kr_mkt(), "FID_INPUT_ISCD": inst.code,
+                "FID_INPUT_DATE_1": (end - timedelta(days=span)).strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+                "FID_PERIOD_DIV_CODE": {"1d": "D", "1w": "W", "1M": "M"}[interval], "FID_ORG_ADJ_PRC": "0"})).body
+            rows = [(datetime.strptime(r["stck_bsop_date"], "%Y%m%d").replace(tzinfo=KST),
+                     r["stck_oprc"], r["stck_hgpr"], r["stck_lwpr"], r["stck_clpr"], r["acml_vol"])
+                    for r in _rows(body, "output2") if r.get("stck_bsop_date")]
+        return _candles(rows, end)
+
+    async def _us_candles(self, inst: Instrument, interval: str, end: datetime) -> list[Candle]:
+        excd = tr.US_QUOTE_EXCD[inst.exchange]
+        if interval == "1m":
+            first = end >= self.clock() - timedelta(minutes=1)
+            ny_end = end.astimezone(NEW_YORK)
+            body = (await self.rest.request(tr.US_MINUTE_CHART, {
+                "AUTH": "", "EXCD": excd, "SYMB": inst.code, "NMIN": "1", "PINC": "1",
+                "NEXT": "" if first else "1", "NREC": "120", "FILL": "",
+                "KEYB": "" if first else ny_end.strftime("%Y%m%d%H%M%S")})).body
+            # 시간외 봉도 그대로 돌려준다 (정규장 필터는 CandleService). 여기서 거르면 시간외만 있는 페이지가
+            # 빈 페이지가 되어 연속조회가 끊긴다 (2026-10-14 실측)
+            rows = [(datetime.strptime(r["kymd"] + r["khms"], "%Y%m%d%H%M%S").replace(tzinfo=KST),
+                     r["open"], r["high"], r["low"], r["last"], r["evol"])
+                    for r in _rows(body, "output2") if r.get("kymd")]
+        else:
+            body = (await self.rest.request(tr.US_DAILY_CHART, {
+                "AUTH": "", "EXCD": excd, "SYMB": inst.code, "GUBN": {"1d": "0", "1w": "1", "1M": "2"}[interval],
+                "BYMD": end.astimezone(NEW_YORK).strftime("%Y%m%d"), "MODP": "1"})).body
+            rows = [(datetime.strptime(r["xymd"], "%Y%m%d").replace(tzinfo=KST),
+                     r["open"], r["high"], r["low"], r["clos"], r["tvol"])
+                    for r in _rows(body, "output2") if r.get("xymd")]
+        return _candles(rows, end)
+
+    async def orderbook(self, instrument: Instrument) -> OrderBook:
+        try:
+            if instrument.market == "KR":
+                o = (await self.rest.request(tr.KR_ASKING_PRICE, {
+                    "FID_COND_MRKT_DIV_CODE": self._kr_mkt(), "FID_INPUT_ISCD": instrument.code})).body["output1"]
+                asks = [(_d(o[f"askp{i}"]), _i(o[f"askp_rsqn{i}"])) for i in range(1, 11)]
+                bids = [(_d(o[f"bidp{i}"]), _i(o[f"bidp_rsqn{i}"])) for i in range(1, 11)]
+            else:
+                o = (await self.rest.request(tr.US_ASKING_PRICE, {
+                    "AUTH": "", "EXCD": tr.US_QUOTE_EXCD[instrument.exchange], "SYMB": instrument.code})).body["output2"]
+                asks = [(_d(o[f"pask{i}"]), _i(o[f"vask{i}"])) for i in range(1, 11)]
+                bids = [(_d(o[f"pbid{i}"]), _i(o[f"vbid{i}"])) for i in range(1, 11)]
+        except (KisApiError, httpx.HTTPError, KeyError) as e:
+            raise BrokerUnavailable(f"호가 조회 실패: {e}") from None
+        return OrderBook(self.clock(), [x for x in asks if x[0] > 0], [x for x in bids if x[0] > 0])
 
     # ───────────── 주문내역 / 잔고 ─────────────
     async def order_statuses(self, market: str, day: date) -> list[BrokerOrderStatus]:

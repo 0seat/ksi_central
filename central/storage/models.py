@@ -191,6 +191,30 @@ class InstrumentRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
 
 
+class CandleRow(Base):
+    """완성된 봉 캐시 (진행 중인 봉은 저장하지 않는다). interval: 1m / 1d / 1w / 1M"""
+    __tablename__ = "candles"
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    interval: Mapped[str] = mapped_column(String(4), primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    open: Mapped[Decimal] = mapped_column(DecimalText)
+    high: Mapped[Decimal] = mapped_column(DecimalText)
+    low: Mapped[Decimal] = mapped_column(DecimalText)
+    close: Mapped[Decimal] = mapped_column(DecimalText)
+    volume: Mapped[int] = mapped_column(Integer)
+
+
+class CandleCoverageRow(Base):
+    """KIS 에서 빠짐없이 받아 캐시한 구간. 이 안의 요청은 KIS 를 다시 부르지 않는다."""
+    __tablename__ = "candle_coverage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    interval: Mapped[str] = mapped_column(String(4))
+    start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
+
+
 class EventRow(Base):
     __tablename__ = "events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
