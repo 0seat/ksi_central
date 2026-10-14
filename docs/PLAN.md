@@ -613,8 +613,8 @@ E:\01_project\26_tick_trading\        ← git 저장소 (public 가능)
 | **M0** 셋업 ✅ | 저장소, venv, 설정 로더(CENTRAL_HOME), 로그 마스킹, gitleaks/pre-commit, CI | 비밀 커밋 시도가 차단됨, `pytest` 통과 (2026-10-13 완료) |
 | **M1** KIS 연결 | auth/rest/ws/tr + `kis_check` | paper: 국내 항목 통과 / real: 국내·미국 조회와 WS 통과 (2026-10-13 조회·실시간 통과. 남은 것: 국내 장중 시세 수신, 모의 주문/취소 `--order-test`) |
 | **M2** 서브계좌 코어 | 데이터 모델, 다통화 원장, 통합증거금 hold, 상태머신, SimBroker | A(국내)/B(미국)/C(혼합) 동시 매매 시나리오 통과 (2026-10-13 완료. 테이블 생성은 create_all, Alembic 마이그레이션은 M4 에서 도입) |
-| **M3** KIS 주문 연동 | KisBroker, 체결통보 귀속, 주문 동기화/복구, 대사, 초기 동기화 | paper 국내 A/B 동시 매매 후 대사 일치. real 소액 국내 SOR과 미국 1주 검증 (2026-10-14 코드와 오프라인 테스트 완료, paper 사전 점검 통과. 남은 것: `tools/live_trial` 장중 실거래 검증, 체결통보 VERIFY 항목 확인) |
-| **M4** API 서버 | Admin, /me, /market, WS, API 키, Tailscale 바인딩 | SDK로 외부 주문 성공 |
+| **M3** KIS 주문 연동 | KisBroker, 체결통보 귀속, 주문 동기화/복구, 대사, 초기 동기화 | paper 국내 A/B 동시 매매 후 대사 일치. real 소액 국내 SOR과 미국 1주 검증 (2026-10-14 국내 paper/real `tools/live_trial` 10/10 통과. ACPT_YN 확인, ORD_EXG_GB 값 정의는 미확인(실측 3/4/10, venue 미지정 처리). 남은 것: real 미국 1주 검증) |
+| **M4** API 서버 | Admin, /me, /market, WS, API 키, Tailscale 바인딩 | SDK로 외부 주문 성공 (2026-10-14 완료: `tools/api_trial` paper 국내 10/10. Alembic 도입(0001 초기, 0002 API 키/종목). 미국 종목은 M5 마스터 전까지 `PUT /admin/instruments` 로 거래소와 함께 등록. 호가/캔들/틱/영업일과 시세 WS 채널은 M5, 평가금액은 M5 시세 연동 후) |
 | **M5** 데이터 서비스 | 구독 허브, 틱 저장, 캔들 캐시, 백필 | 1주 무중단 수집 |
 | **M6** 운영화 | 스케줄러, Windows 서비스, 알림, 백업, Kill switch | 2주 무인 운영 |
 | **M7** 전략 러너 | 플러그인, 샘플 전략 2개 | 두 전략 독립 운영 |

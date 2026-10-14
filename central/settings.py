@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import sys
@@ -28,6 +29,8 @@ HOME_ENV_VAR = "CENTRAL_HOME"
 Env = Literal["real", "paper"]
 Market = Literal["KR", "US"]
 KrRoute = Literal["KRX", "NXT", "SOR"]
+# Tailscale 주소 대역 (IPv4 CGNAT, IPv6 ULA)
+_TAILSCALE_NETS = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
 
 
 class SettingsError(Exception):
@@ -101,9 +104,16 @@ class ServerConfig(_Model):
 
     @field_validator("hosts")
     @classmethod
-    def _no_wildcard_bind(cls, v: list[str]) -> list[str]:
-        if any(h in ("0.0.0.0", "::") for h in v):
-            raise ValueError("전체 인터페이스 바인딩 금지: Tailscale IP 또는 127.0.0.1 만 사용")
+    def _loopback_or_tailscale_only(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("바인딩 주소가 하나 이상 필요")
+        for h in v:
+            try:
+                ip = ipaddress.ip_address(h)
+            except ValueError:
+                raise ValueError(f"IP 주소만 사용 (호스트 이름 불가): {h}") from None
+            if not (ip.is_loopback or any(ip in net for net in _TAILSCALE_NETS if ip.version == net.version)):
+                raise ValueError(f"전체 인터페이스나 외부 주소 바인딩 금지: {h} (127.0.0.1 또는 Tailscale IP 만 사용)")
         return v
 
 

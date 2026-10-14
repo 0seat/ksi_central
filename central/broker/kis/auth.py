@@ -100,6 +100,11 @@ class KisAuth:
     def app_secret(self) -> str:
         return self.account.secrets.app_secret.get_secret_value()
 
+    @property
+    def token_expires_at(self) -> datetime | None:
+        """메모리에 있는 토큰의 만료 시각 (상태 조회용, 발급하지 않음)."""
+        return self._token.expires_at if self._token else None
+
     def cached_token(self) -> Token | None:
         token = self._cache.load()
         if token:

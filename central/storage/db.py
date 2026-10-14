@@ -54,6 +54,12 @@ class Database:
 
         Base.metadata.create_all(self.engine)
 
+    def migrate(self) -> None:
+        """Alembic 으로 최신 스키마까지 올린다 (운영 경로). create_all 은 테스트 편의용."""
+        from central.storage.migrate import upgrade
+
+        upgrade(self.engine)
+
     def session(self) -> Session:
         return self._sessions()
 

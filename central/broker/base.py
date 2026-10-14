@@ -135,6 +135,10 @@ class Broker(ABC):
     async def stop(self) -> None:
         pass
 
+    def health(self) -> dict:
+        """관리자 상태 조회용 (비밀정보 제외)."""
+        return {"connected": True}
+
     @abstractmethod
     async def cancel(
         self, broker_order_no: str, broker_org_no: str, instrument: Instrument, qty: int, route: str | None = None

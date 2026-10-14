@@ -33,24 +33,36 @@
 - 미국주식: NASDAQ, NYSE, AMEX
 - 정규장만 지원합니다.
 
-## 사용 예 (계획)
+## 사용 예
 ```python
-a = CentralClient(url, api_key="서브계좌 A 키")
-await a.buy("KR:005930", qty=10, price="61000")
-await a.balance()          # A의 잔고만 보입니다
+from central.client import CentralClient
 
-b = CentralClient(url, api_key="서브계좌 B 키")
-await b.buy("US:AAPL", qty=3, price="187.25")
+async with CentralClient("http://100.x.y.z:8700", "서브계좌 A 키") as a:
+    await a.buy("KR:005930", qty=10, price="61000")   # 지정가
+    await a.buy("KR:005930", qty=1)                   # 가격 생략 시 시장가 (국내만)
+    await a.balance()                                 # A의 잔고만 보입니다
+    async for msg in a.stream():                      # 주문/체결/잔고 이벤트 실시간 수신
+        print(msg["ch"], msg["data"])
 ```
+
+## 서버 실행
+```powershell
+python -m central gen-admin-key   # 관리자 키 생성 (secrets.toml 에 기록, 화면에 출력하지 않음)
+python -m central serve           # API 서버 (처음 실행 시 실계좌 잔고를 미배정 서브계좌로 가져옴)
+```
+- API 문서: `http://127.0.0.1:8700/api/v1/docs`
+- 관리자 API(`/api/v1/admin/...`, 헤더 `X-Admin-Key`)로 서브계좌 생성, 자금 배정, API 키 발급, 거래 스위치, 긴급 정지를 합니다.
+- 서브계좌 프로그램은 발급받은 키(헤더 `X-API-Key`)로 `/api/v1/me/...`, `/api/v1/market/...`, `/api/v1/ws` 를 씁니다.
+- 바인딩은 `127.0.0.1` 과 Tailscale 주소(100.64.0.0/10)만 허용합니다.
 
 ## 진행 상황
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | M0 | 프로젝트 셋업 | 완료 |
-| M1 | KIS 연결 (인증, REST, WebSocket, 점검 도구) | 진행 중 |
-| M2 | 서브계좌 코어 (원장, 주문 귀속, 상태머신) | 완료 (가상 브로커로 검증) |
-| M3 | KIS 주문 연동, 대사 | 예정 |
-| M4 | API 서버 (REST + WebSocket) | 예정 |
+| M1 | KIS 연결 (인증, REST, WebSocket, 점검 도구) | 완료 |
+| M2 | 서브계좌 코어 (원장, 주문 귀속, 상태머신) | 완료 |
+| M3 | KIS 주문 연동, 대사 | 완료 (국내 모의/실전 실거래 검증, 미국 실거래 검증 남음) |
+| M4 | API 서버 (REST + WebSocket, API 키, SDK) | 완료 (모의 계좌 SDK 실주문 검증) |
 | M5~ | 데이터 서비스, 운영, 전략 러너, 웹 대시보드 | 예정 |
 
 설계 상세: [docs/PLAN.md](docs/PLAN.md)

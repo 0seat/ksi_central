@@ -95,6 +95,16 @@ class KisBroker(Broker):
                 pass
             self._task = None
 
+    def health(self) -> dict:
+        expires = self.auth.token_expires_at
+        return {
+            "connected": self.notice_connected.is_set(),
+            "notice_connected": self.notice_connected.is_set(),
+            "token_expires_at": expires.isoformat() if expires else None,
+            "rate_limit_per_sec": self.profile.rate_limit_per_sec,
+            "ws_max_subscriptions": self.profile.ws_max_subscriptions,
+        }
+
     async def _notice_loop(self) -> None:
         backoff, connects = 1.0, 0
         hts_id = self.account.secrets.hts_id.get_secret_value()

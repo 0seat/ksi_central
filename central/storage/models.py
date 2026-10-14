@@ -166,6 +166,31 @@ class ReconciliationRow(Base):
     diffs: Mapped[list[str]] = mapped_column(JSON)
 
 
+class ApiKeyRow(Base):
+    """서브계좌 API 키. 평문은 발급 응답에서 한 번만 보여 주고 DB 에는 SHA-256 해시만 둔다."""
+    __tablename__ = "api_keys"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sub_account_id: Mapped[int] = mapped_column(ForeignKey("sub_accounts.id"))
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    prefix: Mapped[str] = mapped_column(String(16))  # 식별용 앞부분 (예: cs_AbCd12)
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class InstrumentRow(Base):
+    """종목 정보. M5 종목 마스터 전까지는 관리자가 등록한다 (미국 종목은 거래소 코드가 주문에 필요)."""
+    __tablename__ = "instruments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # KR:005930
+    market: Mapped[str] = mapped_column(String(4))
+    code: Mapped[str] = mapped_column(String(16))
+    exchange: Mapped[str] = mapped_column(String(8))
+    name: Mapped[str] = mapped_column(String(80), default="")
+    nxt_tradable: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
+
+
 class EventRow(Base):
     __tablename__ = "events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
