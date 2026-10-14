@@ -99,7 +99,7 @@ python -m apps.pilot setup          # 서브계좌, 예산, 한도, 키 준비 (
 | M6 | 운영 (일정 작업, 감시자와 상시 실행, Discord 알림, 백업, 정지 영속화, 파일럿) | 구현 완료 (1주 시험 운영 중) |
 | M7~ | 전략 러너, 실전 확대, 웹 대시보드 | 예정 |
 
-설계 상세: [docs/PLAN.md](docs/PLAN.md)
+설계 상세: [docs/PLAN.md](docs/PLAN.md) · 서브계좌 프로그램 개발(SDK/API): [docs/SDK.md](docs/SDK.md)
 
 ## 설치
 Windows와 Python 3.12 이상이 필요합니다.
