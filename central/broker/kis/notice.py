@@ -43,6 +43,9 @@ SAFE_FIELDS = ("ODER_NO", "OODER_NO", "SELN_BYOV_CLS", "RCTF_CLS", "STCK_SHRN_IS
 #   실전 지정가(하한가, 미체결) 3, 실전 시장가(체결) 4, 모의 10
 # 의미가 확정되기 전까지는 venue 를 None(공통 수수료 규칙)으로 둔다.
 KR_VENUES: dict[str, str] = {}
+# 미국 실전 체결통보(2026-10-15 실측): 필드 24개(CNTG_UNPR12 없음), STCK_CNTG_HOUR 빈 값,
+# CNTG_UNPR 는 소수점 없이 끝 4자리가 소수 (11.97달러 → "000119700")
+US_PRICE_DECIMALS = 4
 # 모의 체결통보는 끝의 3개(CRDT_LOAN_DATE, CNTG_ISNM40, ODER_PRC)가 없는 23개로 온다 (2026-10-14 실측)
 KR_PAPER_FIELDS = 23
 
@@ -79,7 +82,8 @@ class NoticeParser:
             if qty <= 0 or price is None:
                 log.error("체결통보 해석 실패: %s", self.safe_view(d))
                 return None
-            hhmmss = d.get("STCK_CNTG_HOUR", "000000")[:6].ljust(6, "0")
+            hhmmss = d.get("STCK_CNTG_HOUR", "")[:6]
+            filled_at = _time_on(today, hhmmss) if len(hhmmss) == 6 else datetime.now(KST)   # 미국은 빈 값으로 옴
             base = f"{today:%Y%m%d}-{order_no}-{hhmmss}-{qty}-{price}"
             self._seen[base] += 1  # 같은 초에 같은 수량/가격 체결이 여러 번 오는 경우 구분
             return BrokerFill(
@@ -90,7 +94,7 @@ class NoticeParser:
                 qty=qty,
                 price=price,
                 venue=KR_VENUES.get(d.get("ORD_EXG_GB", "")) if self.market == "KR" else None,
-                filled_at=_time_on(today, hhmmss),
+                filled_at=filled_at,
             )
 
         if d.get("RCTF_CLS") == "2" and orig_no:
@@ -101,13 +105,18 @@ class NoticeParser:
     def _price(self, d: dict[str, str]) -> Decimal | None:
         for key in ("CNTG_UNPR12", "CNTG_UNPR") if self.market == "US" else ("CNTG_UNPR",):
             raw = d.get(key, "")
-            if raw:
-                try:
-                    value = Decimal(raw)
-                except InvalidOperation:
-                    continue
-                if value > 0:
-                    return value
+            if not raw:
+                continue
+            if self.market == "US" and "." not in raw:
+                if key == "CNTG_UNPR12":
+                    continue   # 소수점 없는 CNTG_UNPR12 의 자릿수는 실측 전이라 쓰지 않는다
+                raw = raw[:-US_PRICE_DECIMALS] + "." + raw[-US_PRICE_DECIMALS:]
+            try:
+                value = Decimal(raw)
+            except InvalidOperation:
+                continue
+            if value > 0:
+                return value
         return None
 
 

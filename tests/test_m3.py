@@ -66,6 +66,17 @@ def test_us_notice_fill_price() -> None:
     assert (fill.instrument_id, fill.side, fill.qty, fill.price, fill.venue) == ("US:AAPL", "sell", 2, D("187.2500"), None)
 
 
+def test_us_notice_real_format() -> None:
+    """2026-10-15 실전 실측: 24필드(CNTG_UNPR12 없음), 체결시각 빈 값, 단가는 소수점 없이 끝 4자리가 소수."""
+    p = NoticeParser("US")
+    record = _record(US_COLUMNS, ODER_NO="0030738833", SELN_BYOV_CLS="02", CNTG_YN="2", ACPT_YN="2",
+                     STCK_SHRN_ISCD="F", CNTG_QTY="0000000001", CNTG_UNPR="000119700", STCK_CNTG_HOUR="")[:24]
+    fill = p.parse(record, TODAY)
+    assert isinstance(fill, BrokerFill)
+    assert (fill.instrument_id, fill.side, fill.qty, fill.price) == ("US:F", "buy", 1, D("11.97"))
+    assert abs((datetime.now(KST) - fill.filled_at).total_seconds()) < 60   # 시각이 없으면 수신 시각
+
+
 def test_safe_view_excludes_personal_fields() -> None:
     p = NoticeParser("KR")
     d = p.to_dict(_record(KR_COLUMNS, CUST_ID="someone", ACNT_NO="12345678", ACNT_NAME="홍길동", ODER_NO="1"))

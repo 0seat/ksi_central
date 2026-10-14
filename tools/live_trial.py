@@ -2,6 +2,7 @@
 
     python -m tools.live_trial --account paper --market KR
     python -m tools.live_trial --account real --market US --confirm-real     # 실제 돈이 움직임
+    python -m tools.live_trial --account real --market US --confirm-real --fx-broker   # USD 없이 통합증거금(KRW)으로
 
 흐름
  1. 체결통보 연결, 초기 동기화(미배정으로 실계좌 잔고 반영), 사전 대사
@@ -25,7 +26,9 @@ from central.app import CentralApp
 from central.broker.kis.broker import KisBroker
 from central.core.instruments import Instrument, InstrumentRegistry, tick_size
 from central.core.logging import setup_logging
+from central.oms import queries
 from central.oms.errors import OmsError
+from central.oms.fees import FeeRule
 from central.oms.orders import PlaceOrder
 from central.settings import load_settings
 from central.storage.db import Database
@@ -71,10 +74,14 @@ async def run(args: argparse.Namespace) -> int:
     enabled = account.model_copy(update={"profile": account.profile.model_copy(update={"trading_enabled": True})})
     settings = settings.model_copy(update={"accounts": {alias: enabled}})
     inst = SYMBOLS[market]
-    app = CentralApp(settings, db=Database.file(settings.data_dir / f"trial_{alias}.db"),
+    app = CentralApp(settings, db=Database.file(settings.data_dir / f"{args.db_name or 'trial_' + alias}.db"),
                      instruments=InstrumentRegistry([inst]))
     broker = app.brokers[alias]
     assert isinstance(broker, KisBroker)
+    if not queries.fee_schedules(app.db, alias):   # 검증 DB 에 운영 DB 의 수수료 설정을 복사
+        for r in queries.fee_schedules(Database.file(settings.data_dir / "central.db"), alias):
+            app.fees.set_rule(alias, r["market"], r["side"], FeeRule(r["fee_rate"], r["min_fee"], r["tax_rate"]),
+                              r["venue"], r["effective_from"])
     cur = inst.currency
     results: list[bool] = []
     print(f"\n=== 실거래 검증 [{alias}/{market}] {inst.id} ===")
@@ -85,6 +92,12 @@ async def run(args: argparse.Namespace) -> int:
         except asyncio.TimeoutError:
             pass
         results.append(step("체결통보 연결", broker.notice_connected.is_set()))
+        if args.symbol:   # 기본 종목 대신 종목 마스터에서 찾은 종목 (예: 예산이 작을 때 저가주)
+            found = app.instruments.get(args.symbol.upper())
+            if found is None or found.market != market:
+                raise OmsError("INVALID_REQUEST", f"{args.symbol} 를 {market} 종목 마스터에서 찾지 못함")
+            inst = found
+            print(f"  종목: {inst.id} {inst.exchange} {inst.name}")
 
         boot = await app.bootstrap_if_empty(alias)
         results.append(step("초기 동기화", True, "이번에 실행" if boot else "이미 완료됨"))
@@ -99,14 +112,21 @@ async def run(args: argparse.Namespace) -> int:
         budgets = {"T-A": (low * Decimal("1.02")).quantize(Decimal("0.01"), ROUND_CEILING),
                    "T-B": (high * Decimal("1.02")).quantize(Decimal("0.01"), ROUND_CEILING)}
         subs = {s.name: s for s in app.accounts.list(alias)}
+        # --fx-broker: USD 대신 KRW 를 배정하고 통합증거금 자동환전(fx_mode=broker)에 맡긴다
+        fx_mode, fund_cur, fund_rate, suffix = "none", cur, Decimal("1"), ""
+        if args.fx_broker:
+            fx_mode, fund_cur, suffix = "broker", "KRW", f"-{market}-FX"
+            fund_rate = await broker.fx_rate() * Decimal("1.05")
         ids = {}
         for name, budget in budgets.items():
-            sub = subs.get(name) or app.accounts.create_sub_account(alias, name, markets=[market])
+            sub = subs.get(name + suffix) or app.accounts.create_sub_account(
+                alias, name + suffix, markets=[market], fx_mode=fx_mode)
             ids[name] = sub.id
-            need = budget - app.accounts.balances(sub.id)[cur].available
+            need = (budget * fund_rate).quantize(Decimal("1") if fund_cur == "KRW" else Decimal("0.01"), ROUND_CEILING)                 - app.accounts.balances(sub.id)[fund_cur].available
             if need > 0:
-                app.accounts.transfer(app.accounts.unallocated(alias).id, sub.id, cur, need)
-        results.append(step("서브계좌 준비", True, f"T-A {budgets['T-A']}, T-B {budgets['T-B']} {cur} 이상"))
+                app.accounts.transfer(app.accounts.unallocated(alias).id, sub.id, fund_cur, need)
+        results.append(step("서브계좌 준비", True, f"T-A {budgets['T-A']}, T-B {budgets['T-B']} {cur} 이상"
+                            + (" (KRW 로 배정, fx_mode=broker)" if args.fx_broker else "")))
 
         tag = time.strftime("%H%M%S")
         # T-A: 체결되지 않을 가격 → 취소
@@ -148,8 +168,11 @@ async def run(args: argparse.Namespace) -> int:
              (cash_diffs[0] + "  ← 수수료/세금 미설정이면 정상") if cash_diffs else "일치")
 
         for name, sid in ids.items():
-            b = app.accounts.balances(sid)[cur]
-            print(f"  {name}: {cur} 잔고 {b.cash} (홀드 {b.held}), 보유 {[(p.instrument_id, p.qty) for p in app.accounts.positions(sid)]}")
+            bals = app.accounts.balances(sid)
+            cash = ", ".join(f"{c} {bals[c].cash} (홀드 {bals[c].held})" for c in sorted({cur, fund_cur}))
+            print(f"  {name}: {cash}, 보유 {[(p.instrument_id, p.qty) for p in app.accounts.positions(sid)]}")
+            for f in queries.fills(app.db, sid):
+                print(f"    체결 {f.side} {f.qty}@{f.price} 수수료 {f.fee} 세금 {f.tax}")
     except OmsError as e:
         results.append(step("OMS 오류", False, f"{e.code} {e.message}"))
     finally:
@@ -165,6 +188,9 @@ def main() -> int:
     parser.add_argument("--account", required=True)
     parser.add_argument("--market", choices=["KR", "US"], required=True)
     parser.add_argument("--confirm-real", action="store_true")
+    parser.add_argument("--fx-broker", action="store_true", help="USD 없이 통합증거금(KRW)으로 미국 주문")
+    parser.add_argument("--db-name", help="검증 DB 파일 이름 (기본 trial_<계좌>)")
+    parser.add_argument("--symbol", help="검증 종목 (예: US:F). 기본은 KR:005930 / US:AAPL")
     return asyncio.run(run(parser.parse_args()))
 
 
