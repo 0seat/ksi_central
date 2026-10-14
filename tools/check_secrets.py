@@ -42,6 +42,8 @@ SECRET_ASSIGNMENT = re.compile(
 )
 # "<실제 키>" 같은 안내 문구, "{VAR}" 같은 템플릿 치환자도 허용
 PLACEHOLDER = re.compile(r"(?i)^(dummy|test|fake|example|sample|changeme|your[_-]|<|\{)")
+# 중앙증권이 발급하는 키 (central/oms/apikeys.py, central/__main__.py): 접두어 + token_urlsafe(32) 43자
+CENTRAL_KEY = re.compile(r"(?<![A-Za-z0-9_-])(cs|csadm)_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")
 
 
 def forbidden_name(path: Path) -> bool:
@@ -61,6 +63,8 @@ def secret_lines(path: Path) -> list[tuple[int, str]]:
         for m in SECRET_ASSIGNMENT.finditer(line):
             if not PLACEHOLDER.match(m.group(2)):
                 hits.append((lineno, m.group(1)))
+        for m in CENTRAL_KEY.finditer(line):
+            hits.append((lineno, "중앙증권 관리자 키" if m.group(1) == "csadm" else "중앙증권 서브계좌 API 키"))
     return hits
 
 

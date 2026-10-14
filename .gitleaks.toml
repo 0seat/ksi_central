@@ -24,6 +24,13 @@ description = "KIS 접근토큰 (JWT)"
 regex = '''eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'''
 keywords = ["eyj"]
 
+[[rules]]
+id = "central-api-key"
+description = "중앙증권 서브계좌 API 키(cs_) / 관리자 키(csadm_)"
+regex = '''(?:^|[^A-Za-z0-9_-])((?:cs|csadm)_[A-Za-z0-9_-]{43})(?:$|[^A-Za-z0-9_-])'''
+secretGroup = 1
+keywords = ["cs_", "csadm_"]
+
 [allowlist]
 description = "테스트용 더미 값"
 regexes = ['''(?i)^(dummy|test|fake|example|sample)''']

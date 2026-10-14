@@ -58,6 +58,16 @@ def test_placeholder_allowed(tmp_path: Path, content: str) -> None:
     assert not secret_lines(_file(tmp_path, content))
 
 
+def test_central_issued_keys_detected(tmp_path: Path) -> None:
+    import secrets
+
+    for prefix in ("cs_", "csadm_"):
+        key = prefix + secrets.token_urlsafe(32)  # 실제 발급 형식, 실행할 때마다 무작위
+        assert secret_lines(_file(tmp_path, f'client = CentralClient(url, "{key}")'))
+    for text in ('os.environ["CENTRAL_API_KEY"]', 'headers={"X-API-Key": "cs_nope"}', 'cs_short_value'):
+        assert not secret_lines(_file(tmp_path, text))
+
+
 def test_main_exit_codes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     good = _file(tmp_path, 'app_key = ""')
     assert main([str(good)]) == 0

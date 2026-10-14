@@ -35,9 +35,11 @@
 
 ## 사용 예
 ```python
+import os
 from central.client import CentralClient
 
-async with CentralClient("http://100.x.y.z:8700", "서브계좌 A 키") as a:
+# 키는 코드에 적지 말고 환경변수 등 코드 밖에서 읽는다
+async with CentralClient(os.environ["CENTRAL_URL"], os.environ["CENTRAL_API_KEY"]) as a:
     await a.buy("KR:005930", qty=10, price="61000")   # 지정가
     await a.buy("KR:005930", qty=1)                   # 가격 생략 시 시장가 (국내만)
     await a.balance()                                 # A의 잔고만 보입니다
