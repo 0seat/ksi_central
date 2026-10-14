@@ -136,15 +136,51 @@ class LoggingConfig(_Model):
     retention_days: int = Field(default=30, ge=1)
 
 
+class ProgramConfig(_Model):
+    """감시자(supervise)가 서버와 함께 띄우는 프로그램. 저장소 루트에서 같은 파이썬으로 실행한다."""
+    name: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,31}$")
+    args: list[str] = Field(min_length=1)   # 예: ["-m", "apps.pilot", "run"]
+
+
+class OpsConfig(_Model):
+    """운영: 알림, 일정 작업, 감시 (docs/PLAN.md M6)."""
+    notify_min_level: Literal["info", "warning", "error"] = "info"
+    alert_cooldown_minutes: float = Field(default=15, ge=0)   # 같은 알림 반복 억제
+    halt_on_reconcile_mismatch: bool = True
+    backup_keep: int = Field(default=14, ge=1)
+    disk_min_free_gb: float = Field(default=20, ge=0)
+    ws_down_alert_seconds: int = Field(default=120, ge=10)
+    stale_tick_minutes: float = Field(default=5, gt=0)        # 장중 상시 수집 종목의 체결이 이만큼 끊기면 알림
+    programs: list[ProgramConfig] = Field(default_factory=list)
+
+    @field_validator("programs")
+    @classmethod
+    def _unique_names(cls, v: list[ProgramConfig]) -> list[ProgramConfig]:
+        names = [p.name for p in v]
+        if len(names) != len(set(names)) or "serve" in names:
+            raise ValueError("프로그램 이름이 중복되거나 예약어(serve)")
+        return v
+
+
+_DISCORD_WEBHOOK = re.compile(r"^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+$")
+
+
 class Settings(_Model):
     home: Path
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     market_data: MarketDataConfig = Field(default_factory=MarketDataConfig)
+    ops: OpsConfig = Field(default_factory=OpsConfig)
     accounts: dict[str, Account]
     admin_key: SecretStr | None = None
-    telegram_bot_token: SecretStr | None = None
-    telegram_chat_id: SecretStr | None = None
+    discord_webhook: SecretStr | None = None
+
+    @field_validator("discord_webhook")
+    @classmethod
+    def _discord_url(cls, v: SecretStr | None) -> SecretStr | None:
+        if v is not None and not _DISCORD_WEBHOOK.fullmatch(v.get_secret_value()):
+            raise ValueError("Discord 웹훅 URL 형식 아님 (https://discord.com/api/webhooks/<id>/<token>)")
+        return v
 
     @model_validator(mode="after")
     def _market_data_accounts_valid(self) -> Settings:
@@ -189,10 +225,15 @@ class Settings(_Model):
     def backups_dir(self) -> Path:
         return self.home / "backups"
 
+    @property
+    def apps_dir(self) -> Path:
+        """서브계좌 프로그램(파일럿 등)의 상태와 보고서."""
+        return self.home / "apps"
+
     def secret_values(self) -> list[str]:
         """로그 마스킹에 등록할 비밀 문자열 목록."""
         values: list[str] = []
-        for opt in (self.admin_key, self.telegram_bot_token, self.telegram_chat_id):
+        for opt in (self.admin_key, self.discord_webhook):
             if opt is not None:
                 values.append(opt.get_secret_value())
         for acc in self.accounts.values():
@@ -270,10 +311,10 @@ def load_settings(home: Path | str | None = None) -> Settings:
             server=ServerConfig(**config.get("server", {})),
             logging=LoggingConfig(**config.get("logging", {})),
             market_data=MarketDataConfig(**config.get("market_data", {})),
+            ops=OpsConfig(**config.get("ops", {})),
             accounts=accounts,
             admin_key=_opt_secret(secrets.get("central", {}).get("admin_key")),
-            telegram_bot_token=_opt_secret(secrets.get("telegram", {}).get("bot_token")),
-            telegram_chat_id=_opt_secret(secrets.get("telegram", {}).get("chat_id")),
+            discord_webhook=_opt_secret(secrets.get("discord", {}).get("webhook_url")),
         )
     except ValidationError as e:
         raise SettingsError(f"설정 값 오류: {_describe(e)}") from None

@@ -28,6 +28,10 @@ class MarketHours:
     holidays: dict[str, set[date]] = field(default_factory=lambda: {"KR": set(), "US": set()})
     us_early_close: dict[date, time] = field(default_factory=dict)   # 조기폐장일 → 마감 시각(ET)
 
+    def is_trading_day(self, market: str, day: date) -> bool:
+        """day 는 해당 시장 현지 날짜 (국내 KST, 미국 ET)."""
+        return day.weekday() < 5 and day not in self.holidays.get(market, set())
+
     def can_place_order(self, market: str, at: datetime) -> tuple[bool, str]:
         if market == "KR":
             local = at.astimezone(KST)

@@ -1,5 +1,7 @@
 """주문 전 리스크 점검과 긴급 정지(kill switch).
 
+정지 상태는 halts 테이블에 저장해 재시작해도 유지한다. 해제는 관리자 API 로만 한다.
+
 한도는 서브계좌 x 시장 단위이며 금액은 해당 시장 통화 기준이다.
 일일 손실 한도에 도달하면 신규 매수만 막고 매도(포지션 축소)는 허용한다.
 """
@@ -11,6 +13,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from central.core.instruments import Instrument
@@ -18,7 +21,7 @@ from central.core.money import ZERO
 from central.oms import ledger
 from central.oms.errors import OmsError
 from central.storage.db import Database
-from central.storage.models import FillRow, OrderRow, RiskLimitRow
+from central.storage.models import FillRow, HaltRow, OrderRow, RiskLimitRow
 
 OPEN_STATUSES = ("SUBMITTING", "ACCEPTED", "PARTIALLY_FILLED", "CANCEL_PENDING", "UNKNOWN")
 
@@ -52,11 +55,26 @@ class RiskEngine:
             row.max_open_orders = limits.max_open_orders
             row.allowed_symbols = limits.allowed_symbols
 
+    def __post_init__(self) -> None:
+        # 정지 상태는 DB 에 남겨 재시작 후에도 유지한다
+        try:
+            with self.db.session() as s:
+                self.halted |= {(r.scope, r.id) for r in s.scalars(select(HaltRow))}
+        except OperationalError:
+            pass  # 스키마 생성 전 (테스트)
+
     def halt(self, scope: str, id_: str = "") -> None:
         self.halted.add((scope, id_))
+        with self.db.session() as s, s.begin():
+            if s.get(HaltRow, (scope, id_)) is None:
+                s.add(HaltRow(scope=scope, id=id_))
 
     def resume(self, scope: str, id_: str = "") -> None:
         self.halted.discard((scope, id_))
+        with self.db.session() as s, s.begin():
+            row = s.get(HaltRow, (scope, id_))
+            if row is not None:
+                s.delete(row)
 
     def is_halted(self, broker_account_id: str, sub_account_id: int, market: str) -> bool:
         scopes = {("all", ""), ("broker", broker_account_id), ("broker_market", f"{broker_account_id}:{market}"),

@@ -293,6 +293,30 @@ def market_data(app: App):
                "ticks_written": app.ticks.written if app.ticks else None})
 
 
+# ───────────── 운영 ─────────────
+@router.get("/ops")
+def ops_status(app: App):
+    """일정 작업의 마지막 실행, 감시 상태, 알림 전송 통계."""
+    return ok(app.ops.status())
+
+
+@router.post("/ops/jobs/{name}/run")
+async def ops_run_job(app: App, name: str):
+    """일정 작업을 지금 실행 (실패한 작업 재실행 등). 오늘 실행 기록을 덮어쓴다."""
+    if name not in app.ops.scheduler.jobs:
+        raise OmsError("NOT_FOUND", f"작업 {name} 없음: {sorted(app.ops.scheduler.jobs)}")
+    return ok(await app.ops.scheduler.run(name))
+
+
+@router.post("/ops/notify-test")
+def ops_notify_test(app: App):
+    """알림 경로 확인용 메시지 1건."""
+    if not app.notifier.enabled:
+        raise OmsError("NOT_CONFIGURED", "secrets.toml [discord] webhook_url 이 비어 있음")
+    sent = app.notifier.info("알림 시험", "관리자 API 로 보낸 시험 메시지", key=f"test:{app.clock():%H%M%S}")
+    return ok({"queued": sent})
+
+
 # ───────────── 종목 ─────────────
 class InstrumentBody(_Body):
     symbol: str = Field(description="KR:005930 / US:AAPL")

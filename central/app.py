@@ -5,6 +5,7 @@ API 서버(central/api)와 점검 도구가 이 객체 하나를 만들어 쓴�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Callable
@@ -29,6 +30,8 @@ from central.oms.errors import OmsError
 from central.oms.fees import FeeModel
 from central.oms.orders import WORKING, OrderService
 from central.oms.sync import OrderSync
+from central.ops.notify import Notifier, notifier_from_settings
+from central.ops.service import Operations
 from central.reconcile.reconciler import Reconciler, bootstrap_from_broker
 from central.risk.engine import RiskEngine
 from central.settings import Settings
@@ -44,10 +47,12 @@ class CentralApp:
     def __init__(
         self, settings: Settings, *, db: Database | None = None, brokers: dict[str, Broker] | None = None,
         instruments: InstrumentRegistry | None = None, clock: Callable[[], datetime] = now_kst,
-        realtime: dict[str, RealtimeSource] | None = None,
+        realtime: dict[str, RealtimeSource] | None = None, notifier: Notifier | None = None,
     ) -> None:
-        """realtime: 시세 등록에 쓸 계좌별 실시간 세션. 생략하면 KisBroker 의 공유 세션을 쓴다."""
+        """realtime: 시세 등록에 쓸 계좌별 실시간 세션. 생략하면 KisBroker 의 공유 세션을 쓴다.
+        notifier: 생략하면 secrets.toml 의 Discord 웹훅 (없으면 알림 꺼짐)."""
         self.settings = settings
+        self.notifier = notifier or notifier_from_settings(settings)
         self.clock = clock
         self.db = db or Database.file(settings.data_dir / "central.db")
         self.db.migrate()
@@ -87,8 +92,10 @@ class CentralApp:
             self.ticks = TickStore(settings.ticks_dir, flush_seconds=settings.market_data.flush_seconds, clock=clock)
             self.market.listeners.append(self.ticks.on_market)
         self.candles = CandleService(self.db, self.data_broker, clock)
+        self.price_limits: dict[tuple, tuple] = {}   # (종목, 날짜) → (상한가, 하한가) 현재가 응답용 캐시
         self.calendar = CalendarService(self.db, self.hours, self._kr_calendar_broker, clock)
         self.calendar.apply()
+        self.ops = Operations(self, self.notifier)
 
     def _kr_calendar_broker(self) -> Broker | None:
         """국내 휴장일 조회(CTCA0903R)는 실전 계좌만 된다."""
@@ -136,13 +143,16 @@ class CentralApp:
         if self.ticks:
             await self.ticks.start()
         await self.market.start_watchlist()
+        await self.ops.start()
 
     async def stop(self) -> None:
+        await self.ops.stop()
         if self.ticks:
             await self.ticks.stop()
         for broker in self.brokers.values():
             await broker.stop()
         await self.http.aclose()
+        await asyncio.to_thread(self.notifier.close)
 
     async def sync_all(self, alias: str) -> None:
         for market in self.markets_of(alias):

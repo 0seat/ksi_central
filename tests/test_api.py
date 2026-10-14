@@ -82,11 +82,12 @@ def test_migrations_match_models(tmp_path: Path) -> None:
 def test_legacy_create_all_db_is_stamped_and_upgraded(tmp_path: Path) -> None:
     db = Database.file(tmp_path / "legacy.db")
     legacy = [t for name, t in Base.metadata.tables.items()
-              if name not in ("api_keys", "instruments", "candles", "candle_coverage", "market_days")]
+              if name not in ("api_keys", "instruments", "candles", "candle_coverage", "market_days", "halts",
+                              "job_runs")]
     Base.metadata.create_all(db.engine, tables=legacy)  # M3 까지의 DB
     db.migrate()
     tables = set(inspect(db.engine).get_table_names())
-    assert {"api_keys", "instruments", "candles", "orders"} <= tables
+    assert {"api_keys", "instruments", "candles", "orders", "halts", "job_runs"} <= tables
     assert migrate.current(db.engine) == migrate.head()
 
 

@@ -44,6 +44,8 @@ SECRET_ASSIGNMENT = re.compile(
 PLACEHOLDER = re.compile(r"(?i)^(dummy|test|fake|example|sample|changeme|your[_-]|<|\{)")
 # 중앙증권이 발급하는 키 (central/oms/apikeys.py, central/__main__.py): 접두어 + token_urlsafe(32) 43자
 CENTRAL_KEY = re.compile(r"(?<![A-Za-z0-9_-])(cs|csadm)_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")
+# Discord 웹훅: URL 경로의 토큰(실제 약 68자)이 비밀
+DISCORD_WEBHOOK = re.compile(r"discord(?:app)?\.com/api/webhooks/\d{5,}/[A-Za-z0-9_-]{30,}")
 
 
 def forbidden_name(path: Path) -> bool:
@@ -65,6 +67,8 @@ def secret_lines(path: Path) -> list[tuple[int, str]]:
                 hits.append((lineno, m.group(1)))
         for m in CENTRAL_KEY.finditer(line):
             hits.append((lineno, "중앙증권 관리자 키" if m.group(1) == "csadm" else "중앙증권 서브계좌 API 키"))
+        if DISCORD_WEBHOOK.search(line):
+            hits.append((lineno, "Discord 웹훅 URL"))
     return hits
 
 

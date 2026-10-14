@@ -48,17 +48,44 @@ async with CentralClient(os.environ["CENTRAL_URL"], os.environ["CENTRAL_API_KEY"
 ```
 
 시세 데이터: `/market/quote`, `/market/orderbook`, `/market/candles?interval=1m|5m|15m|30m|60m|1d|1w|1M`,
-`/market/ticks`, `/market/calendar`, `/market/symbols`. 실시간 채널은 `tick:`, `orderbook:`, `candle.1m:`.
+`/market/ticks`, `/market/calendar`, `/market/symbols` (SDK: `quote`, `orderbook`, `candles`, `ticks`, `calendar`, `symbols`).
+실시간 채널은 `tick:`, `orderbook:`, `candle.1m:`.
 
 ## 서버 실행
 ```powershell
 python -m central gen-admin-key   # 관리자 키 생성 (secrets.toml 에 기록, 화면에 출력하지 않음)
 python -m central serve           # API 서버 (처음 실행 시 실계좌 잔고를 미배정 서브계좌로 가져옴)
+python -m central supervise       # 서버 + 추가 프로그램을 감시하며 실행 (상시 운영은 아래 '운영')
 ```
 - API 문서: `http://127.0.0.1:8700/api/v1/docs`
 - 관리자 API(`/api/v1/admin/...`, 헤더 `X-Admin-Key`)로 서브계좌 생성, 자금 배정, API 키 발급, 거래 스위치, 긴급 정지를 합니다.
 - 서브계좌 프로그램은 발급받은 키(헤더 `X-API-Key`)로 `/api/v1/me/...`, `/api/v1/market/...`, `/api/v1/ws` 를 씁니다.
 - 바인딩은 `127.0.0.1` 과 Tailscale 주소(100.64.0.0/10)만 허용합니다.
+
+## 운영 (상시 실행)
+```powershell
+python -m central service install   # 작업 스케줄러 등록 (관리자 권한 PowerShell, 한 번만)
+python -m central service start     # 시작
+python -m central service status    # 감시자, 서버, 추가 프로그램 상태
+python -m central service stop      # 정상 종료 (자동 재실행도 멈춤)
+python -m central notify-test       # Discord 알림 시험
+```
+- 감시자(`python -m central supervise`)가 서버와 `[ops] programs` 의 프로그램을 띄우고, 끝나면 다시 띄우고 Discord 로 알립니다.
+  작업 스케줄러는 부팅 때와 5분마다 감시자가 떠 있는지 확인합니다.
+- 알림: `secrets.toml` 의 `[discord] webhook_url`. 대사 불일치, 실시간 세션 끊김, 장중 시세 멈춤, 긴급 정지,
+  매핑 없는 체결, 오류 로그, 프로세스 종료, 일일 보고를 보냅니다. 같은 알림은 15분에 한 번만 보냅니다.
+- 일정 작업: 07:00 DB 백업과 틱 파일 합치기, 07:20 휴장일/종목 마스터 갱신, 08:40 장 시작 전 점검,
+  15:45 국내 동기화/대사/일일 보고, 20:10 국내 미체결 소멸, 미국 16:20 ET 동기화/미체결 소멸/대사.
+  상태와 수동 실행은 `GET /admin/ops`, `POST /admin/ops/jobs/{name}/run`.
+- 긴급 정지 상태는 DB 에 남아 재시작해도 유지됩니다. 해제는 `POST /admin/kill-switch` 로만 합니다.
+
+## 파일럿 (예제 서브계좌 프로그램)
+`apps/pilot` 은 SDK 와 서브계좌 키만 쓰는 별도 프로그램입니다. 모의 계좌에서 국내 2종목을 소량 매매하고,
+30분마다 접수/정정/취소를 시험하고, 장 마감 후 실시간 1분봉과 REST 1분봉을 비교한 보고서를 남깁니다.
+```powershell
+python -m apps.pilot setup          # 서브계좌, 예산, 한도, 키 준비 (서버 실행 중)
+# central.toml 에 [[ops.programs]] name = "pilot", args = ["-m", "apps.pilot", "run"] 를 넣으면 감시자가 함께 띄운다
+```
 
 ## 진행 상황
 | 단계 | 내용 | 상태 |
@@ -69,7 +96,8 @@ python -m central serve           # API 서버 (처음 실행 시 실계좌 잔�
 | M3 | KIS 주문 연동, 대사 | 완료 (국내 모의/실전 실거래 검증, 미국 실거래 검증 남음) |
 | M4 | API 서버 (REST + WebSocket, API 키, SDK) | 완료 (모의 계좌 SDK 실주문 검증) |
 | M5 | 데이터 서비스 (실시간 시세 허브, 틱 저장, 캔들, 호가, 영업일, 종목 마스터) | 구현 완료 (1주 무중단 수집 검증은 M6 서비스 등록 후) |
-| M6~ | 운영(스케줄러, Windows 서비스, 알림), 전략 러너, 웹 대시보드 | 예정 |
+| M6 | 운영 (일정 작업, 감시자와 상시 실행, Discord 알림, 백업, 정지 영속화, 파일럿) | 구현 완료 (1주 시험 운영 중) |
+| M7~ | 전략 러너, 실전 확대, 웹 대시보드 | 예정 |
 
 설계 상세: [docs/PLAN.md](docs/PLAN.md)
 

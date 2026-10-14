@@ -31,6 +31,13 @@ regex = '''(?:^|[^A-Za-z0-9_-])((?:cs|csadm)_[A-Za-z0-9_-]{43})(?:$|[^A-Za-z0-9_
 secretGroup = 1
 keywords = ["cs_", "csadm_"]
 
+[[rules]]
+id = "discord-webhook-url"
+description = "Discord 웹훅 URL (경로의 토큰이 비밀)"
+regex = '''discord(?:app)?\.com/api/webhooks/\d{5,}/([A-Za-z0-9_-]{30,})'''
+secretGroup = 1
+keywords = ["api/webhooks"]
+
 [allowlist]
 description = "테스트용 더미 값"
 regexes = ['''(?i)^(dummy|test|fake|example|sample)''']

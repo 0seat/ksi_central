@@ -20,6 +20,21 @@ watchlist = []          # 예: ["KR:005930"]. 클라이언트 구독과 무관�
 store_ticks = true      # %CENTRAL_HOME%\data\ticks 에 Parquet 로 저장
 flush_seconds = 30
 
+[ops]
+# 알림은 secrets.toml [discord] webhook_url 로 보낸다 (비우면 끔)
+notify_min_level = "info"       # info / warning / error
+alert_cooldown_minutes = 15     # 같은 알림 반복 억제
+halt_on_reconcile_mismatch = true
+backup_keep = 14                # %CENTRAL_HOME%\backups 에 남길 DB 백업 수 (매일 07:00)
+disk_min_free_gb = 20
+ws_down_alert_seconds = 120     # 실시간 세션이 이만큼 끊기면 알림
+stale_tick_minutes = 5          # 장중 watchlist 종목 체결이 이만큼 없으면 알림
+
+# python -m central supervise 가 서버와 함께 띄우고 감시하는 프로그램 (저장소 루트, 같은 파이썬)
+# [[ops.programs]]
+# name = "pilot"
+# args = ["-m", "apps.pilot", "run"]
+
 # 실계좌 profile. 키 이름(alias)은 secrets.toml 의 [accounts.<alias>] 와 일치해야 한다.
 # 모의/실전은 env 값만 다르고 코드 경로는 같다.
 

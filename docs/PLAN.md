@@ -129,8 +129,8 @@ KIS 연결을 독점하고 그 위에 **가상 서브계좌**를 제공하는 �
 | 설정 | pydantic + tomllib (`central/settings.py`) | `CENTRAL_HOME`의 TOML만 로드. 저장소 내부 경로 거부 |
 | 테스트 | pytest, pytest-asyncio | |
 | 비밀 유출 방지 | gitleaks + pre-commit | 11장 |
-| 서비스화 | NSSM 또는 WinSW | |
-| 알림 | Telegram Bot | |
+| 서비스화 | 작업 스케줄러(부팅 + 5분마다, IgnoreNew) + 자체 감시자 `central supervise` | 외부 실행 파일 없음. 재시작과 알림은 감시자가 맡음 (2026-10-14 변경, 원안 NSSM/WinSW) |
+| 알림 | Discord 웹훅 | 2026-10-14 사용자 결정 (원안 Telegram) |
 
 ---
 
@@ -514,11 +514,12 @@ async for tick in cs.stream("tick:US:AAPL"): ...
 - [x] Python 3.12.10 설치
 - [x] Git 2.55 설치
 - [x] `CENTRAL_HOME` 초기화 (`C:\ProgramData\CentralSecurities`, secrets/state 권한 제한)
-- [ ] NSSM/WinSW 서비스 등록
-- [ ] Windows Update 자동 재부팅 차단 (주말 수동 업데이트)
-- [ ] 절전 해제, KST와 시간 동기화
+- [ ] 상시 실행 등록: `python -m central service install` (관리자 권한). NSSM/WinSW 대신 작업 스케줄러 + 자체 감시자
+- [ ] Windows Update 자동 재부팅 차단 (주말 수동 업데이트). 재부팅되더라도 부팅 트리거로 다시 뜬다
+- [x] 절전 해제 (AC 절전/최대 절전 '안 함' 확인 2026-10-14)
+- [ ] KST와 시간 동기화
 - [ ] Tailscale 자동 시작, 방화벽 규칙
-- [ ] 로그 로테이션, DB 백업, 텔레그램 알림
+- [x] 로그 로테이션(자정, 30일), DB 백업(매일 07:00, 14개), Discord 알림 (코드 완료. 웹훅 입력 필요)
 
 ---
 
@@ -534,7 +535,8 @@ async for tick in cs.stream("tick:US:AAPL"): ...
 | 계좌 식별정보 | 계좌번호, 상품코드 | 같은 파일 (DB에는 alias만 저장) |
 | 런타임 토큰 | 접근토큰, WS 접속키 | 저장소 밖 `state/` (WS 키는 메모리만) |
 | 중앙증권 키 | 관리자 키, 서브계좌 API 키 | 관리자 키는 secrets, API 키는 DB에 **해시만** 저장 |
-| 알림 | 텔레그램 봇 토큰, chat id | secrets |
+| 알림 | Discord 웹훅 URL (경로의 토큰이 비밀. 로그에서 마스킹) | secrets |
+| 서브계좌 프로그램 키 | 파일럿 등의 API 키 | `secrets/apps/*.toml` |
 | 운영 데이터 | DB, 틱 데이터, 로그 | 저장소 밖 데이터 디렉토리 |
 
 ### 11.3 디렉토리 분리
@@ -619,7 +621,7 @@ E:\01_project\26_tick_trading\        ← git 저장소 (public 가능)
 | **M3** KIS 주문 연동 | KisBroker, 체결통보 귀속, 주문 동기화/복구, 대사, 초기 동기화 | paper 국내 A/B 동시 매매 후 대사 일치. real 소액 국내 SOR과 미국 1주 검증 (2026-10-14 국내 paper/real `tools/live_trial` 10/10 통과. ACPT_YN 확인, ORD_EXG_GB 값 정의는 미확인(실측 3/4/10, venue 미지정 처리). 남은 것: real 미국 1주 검증) |
 | **M4** API 서버 | Admin, /me, /market, WS, API 키, Tailscale 바인딩 | SDK로 외부 주문 성공 (2026-10-14 완료: `tools/api_trial` paper 국내 10/10. Alembic 도입(0001 초기, 0002 API 키/종목). 미국 종목은 M5 마스터 전까지 `PUT /admin/instruments` 로 거래소와 함께 등록. 호가/캔들/틱/영업일과 시세 WS 채널은 M5, 평가금액은 M5 시세 연동 후) |
 | **M5** 데이터 서비스 | 구독 허브, 틱 저장, 캔들 캐시, 백필 | 1주 무중단 수집 (2026-10-14 A단계 완료: 공유 실시간 세션, 시세 허브, 파서, API WS 시세 채널, Parquet 틱 저장, 실시간 현재가/평가금액. 실서버 국내 시세 수신과 저장 확인. B단계 완료: 캔들(1m/1d 캐시 + coverage, 5/15/30/60m 집계, 1w/1M), 실시간 1분봉 채널 candle.1m, 호가 REST. 실서버로 국내 분/일/주봉, 미국 일봉과 분봉 연속조회(KEYB) 확인. C단계 완료: 국내 휴장일(CTCA0903R, 하루 1회, 이번 달 1일부터 120일) + 미국 NYSE 규칙(조기폐장 포함)을 주문 허용 판단에 반영, 종목 마스터(국내 코스피/코스닥, 미국 3거래소) 적재와 검색. 남은 것: 미국 실시간 시세 실데이터 확인, 1주 무중단 수집(M6 서비스 등록 후)) |
-| **M6** 운영화 | 스케줄러, Windows 서비스, 알림, 백업, Kill switch | 2주 무인 운영 |
+| **M6** 운영화 | 스케줄러, Windows 서비스, 알림, 백업, Kill switch | 2주 무인 운영 (2026-10-14 구현: Discord 알림(이벤트/오류 로그/일일 보고, 반복 억제), 일정 작업(백업, 휴장일/마스터, 장 시작 전 점검, 국내/미국 마감 동기화+대사, 20:10 미체결 소멸), 감시(실시간 세션 끊김, 장중 시세 멈춤), 정지 상태 DB 영속화, 감시자(자식 재시작, Job Object, 정지 파일로 정상 종료), 작업 스케줄러 등록 CLI. 파일럿 앱(`apps/pilot`, 모의 국내)으로 1주 시험 운영 시작. 남은 것: 작업 스케줄러 등록(관리자 권한), 웹훅 입력, 1주 결과 검토) |
 | **M7** 전략 러너 | 플러그인, 샘플 전략 2개 | 두 전략 독립 운영 |
 | **M8** 실전 확대 | 수수료·세율 반영, 한도 조정 | 실전 1주 대사 일치 |
 | **M9** 웹 대시보드 | 현황, 주문/체결, 손익, 대사, Kill switch UI | Tailscale 내부 접속 |

@@ -12,6 +12,7 @@ import logging
 import socket
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -95,7 +96,9 @@ def _sockets(hosts: list[str], port: int) -> list[socket.socket]:
     return socks
 
 
-def serve(central: CentralApp) -> None:
+def serve(central: CentralApp, stop_file: Path | None = None) -> None:
+    """stop_file: 이 파일이 생기면 정상 종료한다 (감시자가 보내는 종료 요청. Windows 에서 콘솔 없는
+    프로세스에 Ctrl+C 를 보낼 수 없어서 파일로 알린다)."""
     import uvicorn
 
     cfg = central.settings.server
@@ -104,4 +107,25 @@ def serve(central: CentralApp) -> None:
     server = uvicorn.Server(config)
     socks = _sockets(cfg.hosts, cfg.port)
     log.info("중앙증권 API 시작: %s 포트 %d", cfg.hosts, cfg.port)
-    asyncio.run(server.serve(sockets=socks))
+
+    async def main() -> None:
+        watcher = asyncio.create_task(_watch_stop_file(server, stop_file)) if stop_file else None
+        try:
+            await server.serve(sockets=socks)
+        finally:
+            if watcher:
+                watcher.cancel()
+
+    if stop_file:
+        stop_file.unlink(missing_ok=True)
+    asyncio.run(main())
+
+
+async def _watch_stop_file(server, path: Path) -> None:
+    while not server.should_exit:
+        if path.exists():
+            log.info("종료 요청 파일 감지: 정상 종료")
+            path.unlink(missing_ok=True)
+            server.should_exit = True
+            return
+        await asyncio.sleep(1)

@@ -68,6 +68,14 @@ def test_central_issued_keys_detected(tmp_path: Path) -> None:
         assert not secret_lines(_file(tmp_path, text))
 
 
+def test_discord_webhook_detected(tmp_path: Path) -> None:
+    import secrets
+
+    url = f"https://discord.com/api/webhooks/{10**17 + 7}/{secrets.token_urlsafe(51)}"
+    assert secret_lines(_file(tmp_path, f'webhook_url = "{url}"'))
+    assert not secret_lines(_file(tmp_path, 'webhook_url = ""  # https://discord.com/api/webhooks/<id>/<token>'))
+
+
 def test_main_exit_codes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     good = _file(tmp_path, 'app_key = ""')
     assert main([str(good)]) == 0

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -49,6 +49,7 @@ class TickStore:
         self._count = 0
         self._task: asyncio.Task | None = None
         self.written = 0
+        self.counts: Counter[tuple[str, str]] = Counter()   # (YYYYMMDD, 종목) → 받은 틱 수 (운영 보고용)
 
     def _dir(self, market: str, day: str, code: str) -> Path:
         return self.root / market / day / code
@@ -58,7 +59,9 @@ class TickStore:
         """MarketDataHub 리스너."""
         if isinstance(item, Tick):
             market, _, code = item.symbol.partition(":")
-            self._buf[(market, item.ts.strftime("%Y%m%d"), code)].append(item)
+            day = item.ts.strftime("%Y%m%d")
+            self._buf[(market, day, code)].append(item)
+            self.counts[(day, item.symbol)] += 1
             self._count += 1
             if self._count >= self.max_buffer:
                 self.flush()
@@ -125,6 +128,22 @@ class TickStore:
                     for t in self._buf.get((market, day.strftime("%Y%m%d"), code), []))
         rows.sort(key=lambda r: r["ts"])
         return rows[-limit:] if limit else rows
+
+    def day_counts(self, day: date) -> dict[str, int]:
+        """이 프로세스가 받은 그날 틱 수 (재시작 전 수신분은 빠진다)."""
+        key = day.strftime("%Y%m%d")
+        return {sym: n for (d, sym), n in sorted(self.counts.items()) if d == key}
+
+    def compact_before(self, day: date) -> int:
+        """day 이전 날짜 중 조각 파일이 남은 날을 모두 합친다. 합친 종목 수."""
+        cutoff = day.strftime("%Y%m%d")
+        days = {p.parent.parent.name for p in self.root.glob("*/*/*/part-*.parquet")}
+        n = 0
+        for d in sorted(x for x in days if x < cutoff):
+            n += self.compact(datetime.strptime(d, "%Y%m%d").date())
+        for key in [k for k in self.counts if k[0] < cutoff]:
+            del self.counts[key]
+        return n
 
     def compact(self, day: date) -> int:
         """하루치 조각 파일을 종목별 하나(ticks.parquet)로 합친다. 합친 종목 수를 돌려준다."""

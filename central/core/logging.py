@@ -28,6 +28,8 @@ _KEY_VALUE_PATTERN = re.compile(
     ([^\s"',}&]+)
     """
 )
+# Discord 웹훅 URL 은 경로의 토큰이 곧 비밀이다
+_WEBHOOK_PATTERN = re.compile(r"(discord(?:app)?\.com/api/webhooks/\d+/)[\w-]+", re.IGNORECASE)
 
 
 class SecretMasker:
@@ -48,6 +50,7 @@ class SecretMasker:
     def mask(self, text: str) -> str:
         for secret in self._secrets:
             text = text.replace(secret, MASK)
+        text = _WEBHOOK_PATTERN.sub(lambda m: m[1] + MASK, text)
         return _KEY_VALUE_PATTERN.sub(lambda m: f"{m[1]}{m[2]}{m[3] or ''}{MASK}", text)
 
 
@@ -62,16 +65,15 @@ class MaskingFormatter(logging.Formatter):
 _FORMAT = "%(asctime)s %(levelname)-7s %(name)s | %(message)s"
 
 
-def setup_logging(settings: Settings) -> None:
+def setup_logging(settings: Settings, *, name: str = "central", console: bool = True) -> None:
+    """name: 로그 파일 이름 (logs/<name>.log). console=False 는 감시자 아래에서 실행할 때
+    (콘솔 출력이 파일로 다시 쌓이지 않도록)."""
     masker.add(settings.secret_values())
 
     formatter = MaskingFormatter(_FORMAT)
-    console = logging.StreamHandler(sys.stderr)
-    console.setFormatter(formatter)
-
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
     file_handler = logging.handlers.TimedRotatingFileHandler(
-        settings.logs_dir / "central.log",
+        settings.logs_dir / f"{name}.log",
         when="midnight",
         backupCount=settings.logging.retention_days,
         encoding="utf-8",
@@ -80,6 +82,9 @@ def setup_logging(settings: Settings) -> None:
 
     root = logging.getLogger()
     root.handlers.clear()
-    root.addHandler(console)
+    if console:
+        stream = logging.StreamHandler(sys.stderr)
+        stream.setFormatter(formatter)
+        root.addHandler(stream)
     root.addHandler(file_handler)
     root.setLevel(settings.logging.level.upper())

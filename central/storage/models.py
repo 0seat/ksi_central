@@ -227,6 +227,24 @@ class CandleCoverageRow(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
 
 
+class HaltRow(Base):
+    """긴급 정지 상태. 재시작해도 유지된다 (대사 불일치로 걸린 정지가 재시작으로 풀리지 않게)."""
+    __tablename__ = "halts"
+    scope: Mapped[str] = mapped_column(String(16), primary_key=True)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
+
+
+class JobRunRow(Base):
+    """운영 스케줄러 작업의 마지막 실행 (작업 기준 시간대의 날짜). 재시작 후 같은 날 중복 실행 방지."""
+    __tablename__ = "job_runs"
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_date: Mapped[date] = mapped_column(Date)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
+    ok: Mapped[bool] = mapped_column(Boolean)
+    detail: Mapped[str] = mapped_column(String(2000), default="")
+
+
 class EventRow(Base):
     __tablename__ = "events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

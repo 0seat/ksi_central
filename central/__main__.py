@@ -2,6 +2,9 @@
 
     config            설정 요약 (비밀정보 제외)
     serve             API 서버 실행
+    supervise         감시자: 서버와 ops.programs 를 띄우고, 끝나면 다시 띄우고 Discord 로 알림
+    service ...       감시자를 Windows 작업 스케줄러로 상시 실행 (install/start/stop/status/uninstall)
+    notify-test       Discord 알림 시험
     db upgrade        운영 DB 를 최신 스키마로
     db current        현재 스키마 리비전
     master            KIS 종목 마스터 적재 (국내 코스피/코스닥, 미국 나스닥/뉴욕/아멕스)
@@ -24,7 +27,8 @@ def _cmd_config(_: argparse.Namespace) -> int:
     print(f"CENTRAL_HOME : {settings.home}")
     print(f"server       : {settings.server.hosts} : {settings.server.port}")
     print(f"admin_key    : {'설정됨' if settings.admin_key else '없음'}")
-    print(f"telegram     : {'설정됨' if settings.telegram_bot_token else '없음'}")
+    print(f"discord      : {'설정됨' if settings.discord_webhook else '없음'}")
+    print(f"programs     : {[p.name for p in settings.ops.programs]}")
     for alias, acc in settings.accounts.items():
         p = acc.profile
         print(
@@ -35,17 +39,55 @@ def _cmd_config(_: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_serve(_: argparse.Namespace) -> int:
+def _cmd_serve(args: argparse.Namespace) -> int:
+    import logging
+    import os
+    from pathlib import Path
+
     from central.api.server import serve
     from central.app import CentralApp
     from central.core.logging import setup_logging
+    from central.ops.notify import DiscordLogHandler, notifier_from_settings
 
     settings = load_settings()
-    setup_logging(settings)
+    setup_logging(settings, console=not args.no_console_log)
+    notifier = notifier_from_settings(settings)
+    logging.getLogger().addHandler(DiscordLogHandler(notifier))
     if settings.admin_key is None:
-        print("[경고] 관리자 키가 없어 관리자 API 가 비활성입니다 (python -m central gen-admin-key)", file=sys.stderr)
-    serve(CentralApp(settings))
+        logging.getLogger(__name__).warning("관리자 키가 없어 관리자 API 가 비활성입니다 (python -m central gen-admin-key)")
+    stop_file = os.environ.get("CENTRAL_STOP_FILE")
+    serve(CentralApp(settings, notifier=notifier), Path(stop_file) if stop_file else None)
     return 0
+
+
+def _cmd_supervise(_: argparse.Namespace) -> int:
+    from central.core.logging import setup_logging
+    from central.ops.supervisor import Supervisor
+
+    settings = load_settings()
+    setup_logging(settings, name="supervisor")
+    return Supervisor(settings).run()
+
+
+def _cmd_notify_test(_: argparse.Namespace) -> int:
+    from central.ops.notify import notifier_from_settings
+
+    settings = load_settings()
+    n = notifier_from_settings(settings)
+    if not n.enabled:
+        print("secrets.toml [discord] webhook_url 이 비어 있습니다", file=sys.stderr)
+        return 2
+    n.info("알림 시험", "python -m central notify-test")
+    n.close()
+    print("보냄" if n.sent else "실패 (로그 확인)")
+    return 0 if n.sent else 1
+
+
+def _cmd_service(args: argparse.Namespace) -> int:
+    from central.ops import winservice
+
+    settings = load_settings()
+    return getattr(winservice, args.action)(settings)
 
 
 def _cmd_db(args: argparse.Namespace) -> int:
@@ -108,7 +150,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="central", description="중앙증권")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("config", help="설정 확인 (비밀정보는 출력하지 않음)").set_defaults(func=_cmd_config)
-    sub.add_parser("serve", help="API 서버 실행").set_defaults(func=_cmd_serve)
+    sv = sub.add_parser("serve", help="API 서버 실행")
+    sv.add_argument("--no-console-log", action="store_true", help="콘솔 로그 끔 (감시자 아래 실행용)")
+    sv.set_defaults(func=_cmd_serve)
+    sub.add_parser("supervise", help="서버와 추가 프로그램을 띄우고 감시 (끝나면 재시작, 알림)").set_defaults(
+        func=_cmd_supervise)
+    svc = sub.add_parser("service", help="Windows 작업 스케줄러 등록/시작/중지 (감시자 상시 실행)")
+    svc.add_argument("action", choices=["install", "uninstall", "start", "stop", "status"])
+    svc.set_defaults(func=_cmd_service)
+    sub.add_parser("notify-test", help="Discord 알림 시험 메시지 1건").set_defaults(func=_cmd_notify_test)
     db = sub.add_parser("db", help="DB 스키마 관리")
     db.add_argument("action", choices=["upgrade", "current"])
     db.set_defaults(func=_cmd_db)

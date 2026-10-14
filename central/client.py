@@ -131,6 +131,23 @@ class CentralClient:
     async def fx(self) -> dict:
         return await self._req("GET", "/market/fx")
 
+    async def candles(self, symbol: str, interval: str = "1d", *, start=None, end=None, limit: int = 500) -> dict:
+        """interval: 1m 5m 15m 30m 60m 1d 1w 1M. start/end 는 date, datetime 또는 ISO 문자열."""
+        return await self._req("GET", f"/market/candles/{symbol}", params=_dates(
+            {"interval": interval, "limit": limit, "start": start, "end": end}))
+
+    async def orderbook(self, symbol: str) -> dict:
+        return await self._req("GET", f"/market/orderbook/{symbol}")
+
+    async def ticks(self, symbol: str, day=None, limit: int = 10000) -> dict:
+        return await self._req("GET", f"/market/ticks/{symbol}", params={"date": day and str(day), "limit": limit})
+
+    async def calendar(self, market: str = "KR", *, start=None, end=None) -> dict:
+        return await self._req("GET", "/market/calendar", params=_dates({"market": market, "start": start, "end": end}))
+
+    async def symbols(self, q: str = "", market: str | None = None, limit: int = 50) -> list[dict]:
+        return await self._req("GET", "/market/symbols", params={"q": q, "market": market, "limit": limit})
+
     # ───────────── 실시간 ─────────────
     async def stream(self, channels: list[str] | None = None) -> AsyncIterator[dict]:
         """orders, fills, account, system 이벤트를 받는다. 끊기면 반복이 끝나므로 호출 측에서 재접속한다."""
@@ -147,8 +164,9 @@ class CentralClient:
 def _dates(filters: dict) -> dict:
     # from/to 는 파이썬 예약어라 start/end 로 받는다
     out = dict(filters)
-    if "start" in out:
-        out["from"] = str(out.pop("start"))
-    if "end" in out:
-        out["to"] = str(out.pop("end"))
+    for key, name in (("start", "from"), ("end", "to")):
+        if key in out:
+            v = out.pop(key)
+            if v is not None:
+                out[name] = v.isoformat() if hasattr(v, "isoformat") else str(v)
     return out

@@ -48,20 +48,40 @@ def symbols(app: App, q: str = "", market: Literal["KR", "US"] | None = None, li
 @router.get("/quote/{symbol:path}")
 async def quote(app: App, symbol: str, source: Literal["auto", "realtime", "rest"] = "auto"):
     """auto: 실시간 수신 중이고 최근 체결이 REALTIME_FRESH_SEC 이내면 실시간 값, 아니면 REST 조회."""
+    """상한가/하한가는 두 경우 모두 들어간다 (실시간일 때는 그날 처음 한 번 REST 로 받아 캐시)."""
     inst = app.catalog.resolve(symbol)
     tick = app.market.last_tick.get(inst.id)
     if source == "realtime" or (source == "auto" and tick is not None and _fresh(app, tick.ts)):
         if tick is None:
             raise OmsError("NOT_FOUND", f"{inst.id} 실시간 체결 수신 기록 없음 (tick 채널 구독 필요)")
+        upper, lower = await _limits(app, inst)
         return ok({"symbol": inst.id, "currency": inst.currency, "last": tick.price, "bid": tick.bid,
-                   "ask": tick.ask, "cum_volume": tick.cum_volume, "venue": tick.venue, "ts": tick.ts,
-                   "source": "realtime"})
+                   "ask": tick.ask, "cum_volume": tick.cum_volume, "venue": tick.venue, "upper_limit": upper,
+                   "lower_limit": lower, "ts": tick.ts, "source": "realtime"})
+    q = await _rest_quote(app, inst)
+    return ok({"symbol": inst.id, "currency": inst.currency, "last": q.last,
+               "upper_limit": q.upper_limit, "lower_limit": q.lower_limit, "ts": app.clock(), "source": "rest"})
+
+
+async def _rest_quote(app, inst):
     try:
         q = await app.data_broker(inst.market).quote(inst)
     except BrokerUnavailable as e:
         raise OmsError("BROKER_UNAVAILABLE", str(e)) from None
-    return ok({"symbol": inst.id, "currency": inst.currency, "last": q.last,
-               "upper_limit": q.upper_limit, "lower_limit": q.lower_limit, "ts": app.clock(), "source": "rest"})
+    app.price_limits[(inst.id, app.clock().date())] = (q.upper_limit, q.lower_limit)
+    return q
+
+
+async def _limits(app, inst) -> tuple:
+    """가격제한폭은 하루 동안 바뀌지 않는다 (미국은 없음)."""
+    if inst.market != "KR":
+        return None, None
+    key = (inst.id, app.clock().date())
+    if key not in app.price_limits:
+        if len(app.price_limits) > 5000:
+            app.price_limits.clear()
+        await _rest_quote(app, inst)
+    return app.price_limits[key]
 
 
 @router.get("/orderbook/{symbol:path}")

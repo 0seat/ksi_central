@@ -278,6 +278,7 @@ def test_api_ws_market_channel_and_quote(home: Path) -> None:
 
             q = tc.get("/api/v1/market/quote/KR:005930", headers=h).json()["data"]
             assert q["source"] == "realtime" and q["last"] == "61500"
+            assert (q["upper_limit"], q["lower_limit"]) == ("78000", "42000")   # 실시간 응답에도 가격제한폭
             rows = tc.get("/api/v1/market/ticks/KR:005930", headers=h).json()["data"]["rows"]
             assert [r["price"] for r in rows] == ["61500.0000"]
             stats = tc.get("/api/v1/admin/market-data", headers=ADMIN).json()["data"]
