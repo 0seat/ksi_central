@@ -83,7 +83,7 @@ class CandleService:
         broker = self.broker_for(inst.market)
         step = timedelta(minutes=1) if base == "1m" else timedelta(days=1)
         fetched: dict[datetime, Candle] = {}
-        page_end, calls, reached, exhausted = end, 0, False, False
+        page_end, calls, reached, exhausted = _page_end(inst, base, end), 0, False, False
         while calls < MAX_PAGES[base]:
             page = await broker.candle_page(inst, base, page_end)
             calls += 1
@@ -97,7 +97,7 @@ class CandleService:
             if oldest <= fetch_from:
                 reached = True
                 break
-            page_end = _prev_end(inst, base, oldest - step)
+            page_end = _page_end(inst, base, oldest - step)
         truncated = not (reached or exhausted)
         if base == "1m":
             # 페이지 진행은 원본 봉 기준으로 판단했고, 저장과 응답은 정규장 봉만
@@ -146,7 +146,9 @@ class CandleService:
             rows = s.scalars(select(CandleRow).where(
                 CandleRow.symbol == symbol, CandleRow.interval == base, CandleRow.ts >= lo, CandleRow.ts <= end,
             ).order_by(CandleRow.ts))
-            return [Candle(kst(r.ts), r.open, r.high, r.low, r.close, r.volume) for r in rows]  # type: ignore[arg-type]
+            out = [Candle(kst(r.ts), r.open, r.high, r.low, r.close, r.volume) for r in rows]  # type: ignore[arg-type]
+        # 정규장 필터가 생기기 전에 캐시된 시간외 봉은 응답에서 뺀다
+        return [b for b in out if in_regular_session(symbol.split(":")[0], b.ts)] if base == "1m" else out
 
 
 def _floor_period(t: datetime, base: str) -> datetime:
@@ -154,10 +156,19 @@ def _floor_period(t: datetime, base: str) -> datetime:
     return t if base == "1m" else datetime.combine(t.date(), time.min, KST)
 
 
-def _prev_end(inst: Instrument, base: str, t: datetime) -> datetime:
-    """국내 1분봉: 장 시작 전으로 넘어가면 전날 마지막 봉(15:30)부터 이어서 받는다."""
-    if base == "1m" and inst.market == "KR" and t.time() < _KR_OPEN:
-        return datetime.combine(t.date() - timedelta(days=1), _KR_LAST_BAR, KST)
+def _page_end(inst: Instrument, base: str, t: datetime) -> datetime:
+    """국내 1분봉 요청 시각을 정규장 마지막 봉(15:30) 이하로 맞춘다 (2026-10-15 실측).
+
+    - 장 시작 전 시각: KIS 영업일이 아직 넘어가지 않아 하루를 건너뛴 봉이 온다
+      (10-15 08:00 요청 → 10-13 봉). 전날 15:30 으로 요청한다. 휴일/주말의 15:30 은 직전 거래일 봉이 온다.
+    - 15:30 이후 시각: 시간외 봉(~19:59)이 먼저 와서 페이지를 낭비한다. 그날 15:30 으로 요청한다.
+    """
+    if base == "1m" and inst.market == "KR":
+        t = t.astimezone(KST)
+        if t.time() < _KR_OPEN:
+            return datetime.combine(t.date() - timedelta(days=1), _KR_LAST_BAR, KST)
+        if t.time() > _KR_LAST_BAR:
+            return datetime.combine(t.date(), _KR_LAST_BAR, KST)
     return t
 
 

@@ -137,6 +137,35 @@ async def test_us_minutes_page_through_after_hours() -> None:
     assert r.candles[-1].ts == datetime(2026, 10, 14, 4, 59, tzinfo=KST)   # 15:59 EDT
 
 
+async def test_kr_minute_page_end_clamped_to_session() -> None:
+    """장 시작 전/장 마감 후 시각으로 KIS 에 요청하지 않는다 (2026-10-15 실측: 08:00 요청에 하루 건너뛴 봉이 옴)."""
+    asked: list[datetime] = []
+
+    class Recorder:
+        async def candle_page(self, inst, interval, end):
+            asked.append(end)
+            return [b for b in kr_minutes(datetime(2026, 10, 14, tzinfo=KST), n=391) if b.ts <= end][-120:]
+
+    for now, first in ((datetime(2026, 10, 15, 0, 10, tzinfo=KST), datetime(2026, 10, 14, 15, 30, tzinfo=KST)),
+                       (datetime(2026, 10, 14, 20, 0, tzinfo=KST), datetime(2026, 10, 14, 15, 30, tzinfo=KST)),
+                       (datetime(2026, 10, 14, 10, 0, tzinfo=KST), datetime(2026, 10, 14, 10, 0, tzinfo=KST))):
+        asked.clear()
+        db = Database.memory()
+        db.create_all()
+        svc = CandleService(db, lambda market: Recorder(), Clock(now))   # type: ignore[arg-type,return-value]
+        await svc.get(SAMSUNG, "1m", datetime(2026, 10, 14, 9, 30, tzinfo=KST), now)
+        assert asked[0] == first
+
+
+async def test_cached_after_hours_minutes_hidden() -> None:
+    now = datetime(2026, 10, 15, 10, 0, tzinfo=KST)
+    svc, _, _ = _svc(now)
+    day = datetime(2026, 10, 13, tzinfo=KST)
+    svc._save(SAMSUNG.id, "1m", kr_minutes(day, n=391) + kr_minutes(day, start="1800", n=5))   # 이전 버전이 저장한 시간외 봉
+    rows = svc._from_db(SAMSUNG.id, "1m", datetime(2026, 10, 13, 15, 0, tzinfo=KST), now)
+    assert rows[-1].ts == datetime(2026, 10, 13, 15, 30, tzinfo=KST)
+
+
 # ───────────── 실시간 1분봉 ─────────────
 async def test_live_candle_channel_shares_tick_feed(home: Path) -> None:
     src = FakeSource()
