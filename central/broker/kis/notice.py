@@ -6,8 +6,9 @@
 - RCTF_CLS: 0 정상, 1 정정, 2 취소
 - CNTG_YN: 1 주문/정정/취소/거부 접수 통보, 2 체결 통보
 - RFUS_YN: 0 승인, 1 거부
-- ACPT_YN: 1 주문접수, 2 확인, 3 취소(IOC/FOK)  VERIFY
-- ORD_EXG_GB: 체결/주문 거래소 구분 (1 KRX, 2 NXT 로 추정)  VERIFY
+- ACPT_YN: 1 주문접수, 2 확인, 3 취소(IOC/FOK)
+  (실측: 신규주문 접수 통보 1, 취소 확인 통보 2, 체결 통보 2. 3 은 아직 관찰 안 됨)
+- ORD_EXG_GB: 주문 거래소 구분. 값의 정의 미확인 (KR_VENUES 주석 참고)  VERIFY
 """
 
 from __future__ import annotations
@@ -38,7 +39,12 @@ US_COLUMNS = [
 SAFE_FIELDS = ("ODER_NO", "OODER_NO", "SELN_BYOV_CLS", "RCTF_CLS", "STCK_SHRN_ISCD", "CNTG_QTY", "CNTG_UNPR",
                "STCK_CNTG_HOUR", "RFUS_YN", "CNTG_YN", "ACPT_YN", "ODER_QTY", "ORD_EXG_GB", "ODER_PRC", "CNTG_UNPR12")
 
-KR_VENUES = {"1": "KRX", "2": "NXT"}
+# ORD_EXG_GB 값의 정의는 공식 자료에서 찾지 못했다. 2026-10-14 실측(SOR 주문):
+#   실전 지정가(하한가, 미체결) 3, 실전 시장가(체결) 4, 모의 10
+# 의미가 확정되기 전까지는 venue 를 None(공통 수수료 규칙)으로 둔다.
+KR_VENUES: dict[str, str] = {}
+# 모의 체결통보는 끝의 3개(CRDT_LOAN_DATE, CNTG_ISNM40, ODER_PRC)가 없는 23개로 온다 (2026-10-14 실측)
+KR_PAPER_FIELDS = 23
 
 
 class NoticeParser:
@@ -46,9 +52,12 @@ class NoticeParser:
         self.market = market
         self.columns = KR_COLUMNS if market == "KR" else US_COLUMNS
         self._seen: Counter[str] = Counter()
+        self._warned_lengths: set[int] = set()
 
     def to_dict(self, record: list[str]) -> dict[str, str]:
-        if len(record) != len(self.columns):
+        expected = {len(self.columns)} | ({KR_PAPER_FIELDS} if self.market == "KR" else set())
+        if len(record) not in expected and len(record) not in self._warned_lengths:
+            self._warned_lengths.add(len(record))
             log.warning("%s 체결통보 필드 수 %d (예상 %d)", self.market, len(record), len(self.columns))
         return dict(zip(self.columns, (v.strip() for v in record)))
 
@@ -80,7 +89,7 @@ class NoticeParser:
                 side=side,  # type: ignore[arg-type]
                 qty=qty,
                 price=price,
-                venue=KR_VENUES.get(d.get("ORD_EXG_GB", ""), d.get("ORD_EXG_GB") or None) if self.market == "KR" else None,
+                venue=KR_VENUES.get(d.get("ORD_EXG_GB", "")) if self.market == "KR" else None,
                 filled_at=_time_on(today, hhmmss),
             )
 

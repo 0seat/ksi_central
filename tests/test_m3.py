@@ -41,7 +41,7 @@ def test_kr_notice_fill_cancel_reject() -> None:
                            ORD_EXG_GB="2"), TODAY)
     assert isinstance(fill, BrokerFill)
     assert (fill.broker_order_no, fill.instrument_id, fill.side, fill.qty, fill.price, fill.venue) == (
-        "0000123", "KR:005930", "buy", 3, D("61000"), "NXT")
+        "0000123", "KR:005930", "buy", 3, D("61000"), None)  # ORD_EXG_GB 의미 미확정 -> 공통 규칙
     assert fill.filled_at == datetime(2026, 10, 14, 9, 30, 15, tzinfo=KST)
 
     again = p.parse(_record(KR_COLUMNS, ODER_NO="0000123", SELN_BYOV_CLS="02", CNTG_YN="2", STCK_SHRN_ISCD="005930",

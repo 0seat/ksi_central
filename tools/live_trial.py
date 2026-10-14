@@ -93,20 +93,23 @@ async def run(args: argparse.Namespace) -> int:
 
         quote = await broker.quote(inst)
         last = quote.last
-        budget = to_tick(inst, last * Decimal("1.2"), up=True) * 2
+        low = quote.lower_limit if (market == "KR" and quote.lower_limit) else to_tick(inst, last * Decimal("0.8"), up=False)
+        # 국내 시장가 매수는 상한가로 홀드, 미국은 지정가(+1%). 수수료 여유 2%
+        high = quote.upper_limit if (market == "KR" and quote.upper_limit) else to_tick(inst, last * Decimal("1.01"), up=True)
+        budgets = {"T-A": (low * Decimal("1.02")).quantize(Decimal("0.01"), ROUND_CEILING),
+                   "T-B": (high * Decimal("1.02")).quantize(Decimal("0.01"), ROUND_CEILING)}
         subs = {s.name: s for s in app.accounts.list(alias)}
         ids = {}
-        for name in ("T-A", "T-B"):
+        for name, budget in budgets.items():
             sub = subs.get(name) or app.accounts.create_sub_account(alias, name, markets=[market])
             ids[name] = sub.id
             need = budget - app.accounts.balances(sub.id)[cur].available
             if need > 0:
                 app.accounts.transfer(app.accounts.unallocated(alias).id, sub.id, cur, need)
-        results.append(step("서브계좌 준비", True, f"T-A/T-B 각 {budget} {cur} 이상"))
+        results.append(step("서브계좌 준비", True, f"T-A {budgets['T-A']}, T-B {budgets['T-B']} {cur} 이상"))
 
         tag = time.strftime("%H%M%S")
         # T-A: 체결되지 않을 가격 → 취소
-        low = quote.lower_limit if (market == "KR" and quote.lower_limit) else to_tick(inst, last * Decimal("0.8"), up=False)
         oa = await app.orders.place(ids["T-A"], PlaceOrder(f"trial-a-{tag}", inst.id, "buy", "limit", 1, low))
         results.append(step("T-A 지정가 접수", oa.status == "ACCEPTED", f"{low} {oa.status} {oa.reject_reason or ''}"))
         if oa.status == "ACCEPTED":
@@ -119,7 +122,7 @@ async def run(args: argparse.Namespace) -> int:
             buy = PlaceOrder(f"trial-b1-{tag}", inst.id, "buy", "market", 1)
             sell = PlaceOrder(f"trial-b2-{tag}", inst.id, "sell", "market", 1)
         else:
-            buy = PlaceOrder(f"trial-b1-{tag}", inst.id, "buy", "limit", 1, to_tick(inst, last * Decimal("1.01"), up=True))
+            buy = PlaceOrder(f"trial-b1-{tag}", inst.id, "buy", "limit", 1, high)
             sell = None
         ob = await app.orders.place(ids["T-B"], buy)
         st = await wait_status(app, ids["T-B"], ob.id, {"FILLED", "REJECTED", "CANCELED"}, 60)
