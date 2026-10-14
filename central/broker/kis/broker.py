@@ -1,13 +1,12 @@
 """KisBroker: Broker 인터페이스의 한국투자증권 구현 (모의/실전 공용).
 
 - 주문/정정/취소/시세/주문내역/잔고: REST (central/broker/kis/rest.py)
-- 체결통보: 전용 WebSocket 세션. 끊기면 지수 백오프로 재연결하고, 재연결 직후 on_reconnect 콜백으로
-  주문 동기화(central/oms/sync.py)를 돌려 끊긴 동안의 체결을 보정한다.
+- 체결통보: 계좌 공유 실시간 세션(session.py). 끊기면 지수 백오프로 재연결하고, 재연결 직후 on_reconnect
+  콜백으로 주문 동기화(central/oms/sync.py)를 돌려 끊긴 동안의 체결을 보정한다.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from datetime import date, datetime, timedelta
@@ -31,7 +30,8 @@ from central.broker.kis import tr
 from central.broker.kis.auth import KisAuth, KisAuthError
 from central.broker.kis.notice import NoticeParser
 from central.broker.kis.rest import PAGE_100, PAGE_200, KisApiError, KisRestClient
-from central.broker.kis.ws import KisWebSocket
+from central.broker.kis.session import KisWsSession
+from central.broker.kis.ws import RealtimeMessage
 from central.core.instruments import Instrument
 from central.core.market_hours import now_kst
 from central.core.money import ZERO
@@ -72,28 +72,32 @@ class KisBroker(Broker):
         self.rest = KisRestClient(self.auth, http)
         self.clock = clock
         self.on_reconnect: Callable[[], Awaitable[None]] | None = None
-        self.notice_connected = asyncio.Event()
+        # 앱키당 실시간 세션은 하나뿐이라 시세 허브(central/marketdata)도 이 세션을 같이 쓴다
+        self.session = KisWsSession(self.auth)
+        self.session.on_reconnect.append(self._reconnected)
+        self.notice_connected = self.session.connected
         env = self.profile.env
         self._notice_markets = {
             tr.WS_KR_NOTICE[env]: "KR", tr.WS_US_NOTICE[env]: "US",
         }
         self._parsers = {"KR": NoticeParser("KR"), "US": NoticeParser("US")}
-        self._task: asyncio.Task | None = None
         self._fx: tuple[Decimal, float] | None = None
 
-    # ───────────── 체결통보 수신 ─────────────
+    # ───────────── 체결통보 수신 (공유 실시간 세션) ─────────────
     async def start(self) -> None:
-        if self._task is None:
-            self._task = asyncio.create_task(self._notice_loop(), name=f"kis-notice-{self.account_id}")
+        hts_id = self.account.secrets.hts_id.get_secret_value()
+        for tr_id, market in self._notice_markets.items():
+            if market in self.profile.markets:
+                self.session.set_handler(tr_id, self._on_notice)
+                self.session.desire(tr_id, hts_id, "notice")
+        await self.session.start()
 
     async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        await self.session.stop()
+
+    async def _reconnected(self) -> None:
+        if self.on_reconnect:
+            await self.on_reconnect()
 
     def health(self) -> dict:
         expires = self.auth.token_expires_at
@@ -102,58 +106,21 @@ class KisBroker(Broker):
             "notice_connected": self.notice_connected.is_set(),
             "token_expires_at": expires.isoformat() if expires else None,
             "rate_limit_per_sec": self.profile.rate_limit_per_sec,
-            "ws_max_subscriptions": self.profile.ws_max_subscriptions,
+            "realtime": self.session.health(),
         }
 
-    async def _notice_loop(self) -> None:
-        backoff, connects = 1.0, 0
-        hts_id = self.account.secrets.hts_id.get_secret_value()
-        while True:
-            ws = KisWebSocket(self.auth)
+    async def _on_notice(self, msg: RealtimeMessage) -> None:
+        market = self._notice_markets[msg.tr_id]
+        parser = self._parsers[market]
+        for record in msg.records:
+            log.info("[%s] 체결통보 %s %s", self.account_id, market, parser.safe_view(parser.to_dict(record)))
+            event = parser.parse(record, self.clock().date())
+            if event is None:
+                continue
             try:
-                await ws.connect()
-                for tr_id, market in self._notice_markets.items():
-                    if market in self.profile.markets:
-                        ack = await ws.subscribe(tr_id, hts_id)
-                        if not ack.ok:
-                            raise KisAuthError(f"체결통보 구독 실패 {tr_id}: [{ack.msg_cd}] {ack.msg}")
-                connects += 1
-                backoff = 1.0
-                self.notice_connected.set()
-                log.info("[%s] 체결통보 수신 시작 (%d회차 연결)", self.account_id, connects)
-                if connects > 1 and self.on_reconnect:
-                    await self.on_reconnect()
-                await self._consume(ws)
-            except asyncio.CancelledError:
-                raise
+                await self.emit(event)
             except Exception:
-                log.exception("[%s] 체결통보 연결 오류", self.account_id)
-            finally:
-                self.notice_connected.clear()
-                await ws.close()
-            log.warning("[%s] 체결통보 재연결 대기 %.0f초", self.account_id, backoff)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 60.0)
-
-    async def _consume(self, ws: KisWebSocket) -> None:
-        while not ws.closed.is_set():
-            try:
-                msg = await asyncio.wait_for(ws.queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-            market = self._notice_markets.get(msg.tr_id)
-            if market is None:
-                continue
-            parser = self._parsers[market]
-            for record in msg.records:
-                log.info("[%s] 체결통보 %s %s", self.account_id, market, parser.safe_view(parser.to_dict(record)))
-                event = parser.parse(record, self.clock().date())
-                if event is None:
-                    continue
-                try:
-                    await self.emit(event)
-                except Exception:
-                    log.exception("[%s] 체결통보 반영 실패: %s", self.account_id, event)
+                log.exception("[%s] 체결통보 반영 실패: %s", self.account_id, event)
 
     # ───────────── 주문 ─────────────
     async def submit(self, req: BrokerOrderRequest) -> BrokerOrderAck:

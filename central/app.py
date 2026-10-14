@@ -17,6 +17,8 @@ from central.broker.kis.broker import KisBroker
 from central.core.events import EventBus
 from central.core.instruments import InstrumentRegistry
 from central.core.market_hours import MarketHours, now_kst
+from central.marketdata.hub import MarketDataHub, RealtimeSource
+from central.marketdata.ticks import TickStore
 from central.oms.accounts import AccountService, record_event, tx
 from central.oms.apikeys import ApiKeyService
 from central.oms.catalog import InstrumentCatalog
@@ -39,7 +41,9 @@ class CentralApp:
     def __init__(
         self, settings: Settings, *, db: Database | None = None, brokers: dict[str, Broker] | None = None,
         instruments: InstrumentRegistry | None = None, clock: Callable[[], datetime] = now_kst,
+        realtime: dict[str, RealtimeSource] | None = None,
     ) -> None:
+        """realtime: 시세 등록에 쓸 계좌별 실시간 세션. 생략하면 KisBroker 의 공유 세션을 쓴다."""
         self.settings = settings
         self.clock = clock
         self.db = db or Database.file(settings.data_dir / "central.db")
@@ -72,6 +76,14 @@ class CentralApp:
             if isinstance(broker, KisBroker):
                 broker.on_reconnect = lambda alias=alias: self.sync_all(alias)
 
+        if realtime is None:
+            realtime = {a: b.session for a, b in self.brokers.items() if isinstance(b, KisBroker)}
+        self.market = MarketDataHub(realtime, self.profiles, self.catalog, settings.market_data, clock)
+        self.ticks: TickStore | None = None
+        if settings.market_data.store_ticks:
+            self.ticks = TickStore(settings.ticks_dir, flush_seconds=settings.market_data.flush_seconds, clock=clock)
+            self.market.listeners.append(self.ticks.on_market)
+
     def markets_of(self, alias: str) -> list[str]:
         return list(self.profiles[alias].markets)
 
@@ -79,8 +91,13 @@ class CentralApp:
         for alias, broker in self.brokers.items():
             await broker.start()
             await self.sync_all(alias)
+        if self.ticks:
+            await self.ticks.start()
+        await self.market.start_watchlist()
 
     async def stop(self) -> None:
+        if self.ticks:
+            await self.ticks.stop()
         for broker in self.brokers.values():
             await broker.stop()
         await self.http.aclose()

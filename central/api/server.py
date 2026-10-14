@@ -53,6 +53,7 @@ def create_app(central: CentralApp, *, manage_lifecycle: bool = True, bootstrap:
     api.state.central = central
     api.state.hub = ws.EventHub()
     central.bus.subscribe(api.state.hub.on_event)
+    central.market.listeners.append(api.state.hub.on_market)
 
     @api.exception_handler(OmsError)
     async def _oms_error(_: Request, e: OmsError):
@@ -71,7 +72,8 @@ def create_app(central: CentralApp, *, manage_lifecycle: bool = True, bootstrap:
 
     @api.get(f"{API_PREFIX}/health", tags=["system"])
     def health():
-        return ok({"status": "up", "ws_connections": api.state.hub.connections})
+        return ok({"status": "up", "ws_connections": api.state.hub.connections,
+                   "market_channels": len(central.market.stats()["channels"])})
 
     for router in (admin.router, me.router, market.router, ws.router):
         api.include_router(router, prefix=API_PREFIX)

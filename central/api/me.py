@@ -53,12 +53,27 @@ async def balance(app: App, sub: Sub):
     balances = app.accounts.balances(sub.id)
     cost: dict[str, Decimal] = {}
     realized: dict[str, Decimal] = {}
+    value: dict[str, Decimal] = {}
+    unpriced: dict[str, int] = {}
     for p in app.accounts.positions(sub.id, include_closed=True):
         cost[p.currency] = cost.get(p.currency, ZERO) + q_cash(p.avg_price * p.qty, p.currency)
         realized[p.currency] = realized.get(p.currency, ZERO) + p.realized_pnl
-    data: dict = {c: {"cash": b.cash, "held": b.held, "available": b.available,
-                      "position_cost": cost.get(c, ZERO), "realized_pnl": realized.get(c, ZERO)}
-                  for c, b in balances.items()}
+        if p.qty:
+            last = app.market.last_price(p.instrument_id)
+            if last is None:
+                unpriced[p.currency] = unpriced.get(p.currency, 0) + 1
+            else:
+                value[p.currency] = value.get(p.currency, ZERO) + q_cash(last * p.qty, p.currency)
+    data: dict = {}
+    for c, b in balances.items():
+        data[c] = {"cash": b.cash, "held": b.held, "available": b.available,
+                   "position_cost": cost.get(c, ZERO), "realized_pnl": realized.get(c, ZERO)}
+        # 평가는 실시간 체결가를 받는 종목만. 나머지 수는 unpriced_positions 로 알린다
+        if c in value or c in unpriced:
+            data[c]["market_value"] = value.get(c, ZERO) if not unpriced.get(c) else None
+            data[c]["unpriced_positions"] = unpriced.get(c, 0)
+            if not unpriced.get(c):
+                data[c]["unrealized_pnl"] = value.get(c, ZERO) - cost.get(c, ZERO)
 
     profile = app.profiles[sub.broker_account_id]
     if sub.fx_mode == "broker" and profile.integrated_margin:
@@ -71,7 +86,6 @@ async def balance(app: App, sub: Sub):
             data["fx_rate"] = rate
         except Exception:
             data["USD"]["orderable"] = None
-    # 평가금액과 평가손익은 실시간 시세(M5) 연동 후 제공
     return ok(data)
 
 

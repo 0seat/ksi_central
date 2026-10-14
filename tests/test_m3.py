@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -166,21 +165,12 @@ async def test_kis_notice_consume_emits_events(home: Path) -> None:
         got.append(ev)
 
     broker.set_event_handler(handler)
+    broker.session.set_handler("H0STCNI0", broker._on_notice)  # start() 가 하는 등록 (연결 없이)
 
-    class FakeWs:
-        def __init__(self) -> None:
-            self.queue: asyncio.Queue = asyncio.Queue()
-            self.closed = asyncio.Event()
-
-    ws = FakeWs()
     rec = _record(KR_COLUMNS, ODER_NO="1", SELN_BYOV_CLS="02", CNTG_YN="2", STCK_SHRN_ISCD="005930",
                   CNTG_QTY="1", CNTG_UNPR="61000", STCK_CNTG_HOUR="090001")
-    ws.queue.put_nowait(RealtimeMessage("H0STCNI0", True, [rec]))
-    ws.queue.put_nowait(RealtimeMessage("H0STCNT0", False, [["ignored"]]))
-    task = asyncio.create_task(broker._consume(ws))  # type: ignore[arg-type]
-    await asyncio.sleep(0.05)
-    ws.closed.set()
-    await asyncio.wait_for(task, 2)
+    await broker.session.dispatch(RealtimeMessage("H0STCNI0", True, [rec]))
+    await broker.session.dispatch(RealtimeMessage("H0STCNT0", False, [["ignored"]]))  # 핸들러 없는 TR 은 무시
     await http.aclose()
     assert len(got) == 1 and isinstance(got[0], BrokerFill)
 

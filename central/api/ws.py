@@ -2,10 +2,11 @@
 
 인증: 접속 요청 헤더 X-API-Key (쿼리스트링은 접근 로그에 남으므로 받지 않는다).
 자동 구독: orders, fills, account, system — 자기 서브계좌 이벤트만 받는다.
-시세 채널(tick:, orderbook:, candle.*:)은 M5 구독 허브에서 제공한다.
+시세 채널: tick:KR:005930, orderbook:US:AAPL — 시세 허브(central/marketdata/hub.py)에 참조를 걸고,
+연결이 끊기면 자동으로 해제한다.
 
-클라이언트 → {"op": "subscribe", "channels": [...]} / {"op": "ping"}
-서버 → {"ch": "orders" | "fills" | "account" | "system", "data": {...}}
+클라이언트 → {"op": "subscribe" | "unsubscribe", "channels": [...]} / {"op": "ping"}
+서버 → {"ch": "orders" | "fills" | "account" | "system" | "tick:..." | "orderbook:...", "data": {...}}
 """
 
 from __future__ import annotations
@@ -20,7 +21,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from central.api.common import out
 from central.core.events import Event
+from central.marketdata.hub import parse_channel
 from central.oms.accounts import SubAccount
+from central.oms.errors import OmsError
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -36,6 +39,7 @@ class _Conn:
     sub: SubAccount
     queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(QUEUE_SIZE))
     overflow: asyncio.Event = field(default_factory=asyncio.Event)
+    channels: set[str] = field(default_factory=set)   # 시세 채널
 
 
 class EventHub:
@@ -69,6 +73,29 @@ class EventHub:
                 except asyncio.QueueFull:
                     conn.overflow.set()  # 느린 클라이언트: 연결을 끊고 REST 로 다시 맞추게 한다
 
+    def on_market(self, channel: str, item: object) -> None:
+        """MarketDataHub 리스너: 해당 채널을 구독한 연결에만 보낸다."""
+        if channel.startswith("dropped:"):
+            channel = channel.removeprefix("dropped:")
+            msg = _error("SUBSCRIPTION_DROPPED", f"{channel}: {item}")
+            for conn in list(self._conns):
+                if channel in conn.channels:
+                    conn.channels.discard(channel)
+                    self._put(conn, msg)
+            return
+        msg = None
+        for conn in list(self._conns):
+            if channel in conn.channels:
+                msg = msg or {"ch": channel, "data": out(item)}
+                self._put(conn, msg)
+
+    @staticmethod
+    def _put(conn: _Conn, msg: dict) -> None:
+        try:
+            conn.queue.put_nowait(msg)
+        except asyncio.QueueFull:
+            conn.overflow.set()
+
     @staticmethod
     def _route(e: Event):
         sid = e.sub_account_id
@@ -98,6 +125,12 @@ class EventHub:
 async def websocket(ws: WebSocket) -> None:
     app = ws.app.state.central
     hub: EventHub = ws.app.state.hub
+    market = app.market
+
+    def market_name(c: str) -> str:
+        kind, symbol = parse_channel(c)
+        return f"{kind}:{app.catalog.resolve(symbol).id}"
+
     sub = app.apikeys.authenticate(ws.headers.get("x-api-key"))
     if sub is None:
         await ws.close(code=4401, reason="UNAUTHORIZED")
@@ -118,12 +151,29 @@ async def websocket(ws: WebSocket) -> None:
                 continue
             if op == "ping":
                 await conn.queue.put({"ch": "system", "data": {"type": "PONG"}})
-            elif op == "subscribe":
-                channels = [c for c in msg.get("channels", []) if c not in AUTO_CHANNELS]
-                if channels:
-                    await conn.queue.put(_error("NOT_IMPLEMENTED", f"시세 채널은 M5 에서 제공 예정: {channels}"))
-                else:
-                    await conn.queue.put({"ch": "system", "data": {"type": "SUBSCRIBED", "channels": list(AUTO_CHANNELS)}})
+            elif op in ("subscribe", "unsubscribe"):
+                channels = msg.get("channels", [])
+                if not isinstance(channels, list) or not all(isinstance(c, str) for c in channels):
+                    await conn.queue.put(_error("INVALID_REQUEST", "channels 는 문자열 목록"))
+                    continue
+                for c in channels:
+                    if c in AUTO_CHANNELS:
+                        continue
+                    try:
+                        if op == "subscribe":
+                            name = await market.acquire(c)
+                            if name in conn.channels:
+                                await market.release(name)  # 같은 연결의 중복 구독은 한 번만 센다
+                            conn.channels.add(name)
+                        else:
+                            name = market_name(c)
+                            if name in conn.channels:
+                                conn.channels.discard(name)
+                                await market.release(name)
+                    except OmsError as e:
+                        await conn.queue.put(_error(e.code, f"{c}: {e.message}"))
+                await conn.queue.put({"ch": "system", "data": {
+                    "type": "SUBSCRIBED", "channels": list(AUTO_CHANNELS) + sorted(conn.channels)}})
             else:
                 await conn.queue.put(_error("INVALID_REQUEST", f"알 수 없는 op: {op}"))
 
@@ -146,6 +196,10 @@ async def websocket(ws: WebSocket) -> None:
         pass
     finally:
         hub.remove(conn)
+        for name in list(conn.channels):
+            with contextlib.suppress(Exception):
+                await market.release(name)
+        conn.channels.clear()
         for t in tasks:
             t.cancel()
         for t in tasks:

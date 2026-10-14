@@ -11,6 +11,15 @@ port = 8700
 level = "INFO"
 retention_days = 30
 
+[market_data]
+# 시장별로 실시간 시세를 받을 계좌 (비우면 실전 계좌 우선). 앱키 하나에 실시간 세션은 하나뿐이고
+# 체결통보와 시세 등록이 등록 한도(공식 41건)를 함께 쓴다.
+# kr_account = "real"
+# us_account = "real"
+watchlist = []          # 예: ["KR:005930"]. 클라이언트 구독과 무관하게 상시 수집
+store_ticks = true      # %CENTRAL_HOME%\data\ticks 에 Parquet 로 저장
+flush_seconds = 30
+
 # 실계좌 profile. 키 이름(alias)은 secrets.toml 의 [accounts.<alias>] 와 일치해야 한다.
 # 모의/실전은 env 값만 다르고 코드 경로는 같다.
 
@@ -21,6 +30,7 @@ kr_routes = ["KRX"]
 kr_default_route = "KRX"
 integrated_margin = false
 rate_limit_per_sec = 1          # 모의는 0.5초 간격에서도 EGW00201 빈발 (2026-10-13 실측)
+ws_max_subscriptions = 41       # 실시간 등록 한도 (공식: 앱키당 41건)
 trading_enabled = false
 
 [accounts.real]
@@ -30,7 +40,7 @@ kr_routes = ["KRX", "NXT", "SOR"]
 kr_default_route = "SOR"
 integrated_margin = true
 rate_limit_per_sec = 18         # 신규 앱키는 초당 약 3건으로 제한될 수 있음 (2026-10-13 실측)
-ws_max_subscriptions = 40       # 신규 앱키는 3건으로 제한될 수 있음 (2026-10-13 실측)
+ws_max_subscriptions = 41       # 공식 41건. 일부 실전 앱키는 3건으로 제한됨 (2026-10-14 실측, 원인 미확인)
 trading_enabled = false
 usd_inventory_target = 5000     # 미배정이 보유할 USD 재고 (환전 풀)
 usd_inventory_min = 3000        # 이 아래로 내려가면 일괄 환전 알림

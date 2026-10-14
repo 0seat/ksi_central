@@ -283,6 +283,15 @@ async def kill_switch(app: App, body: KillSwitchBody):
     return ok({"halted": app.halted(), "canceled": canceled})
 
 
+# ───────────── 시세 ─────────────
+@router.get("/market-data")
+def market_data(app: App):
+    """시세 허브 상태: 채널별 참조 수, 시장별 수신 계좌, 계좌별 실시간 등록 슬롯, 틱 저장 건수."""
+    sessions = {a: b.health().get("realtime") for a, b in app.brokers.items()}
+    return ok({**app.market.stats(), "sessions": sessions,
+               "ticks_written": app.ticks.written if app.ticks else None})
+
+
 # ───────────── 종목 ─────────────
 class InstrumentBody(_Body):
     symbol: str = Field(description="KR:005930 / US:AAPL")

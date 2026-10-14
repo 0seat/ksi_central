@@ -309,7 +309,8 @@ def test_websocket_delivers_only_own_events(home: Path) -> None:
             assert msg["ch"] == "orders" and msg["data"]["status"] == "ACCEPTED"
 
             ws.send_json({"op": "subscribe", "channels": ["tick:KR:005930"]})
-            assert ws.receive_json()["data"]["code"] == "NOT_IMPLEMENTED"
+            assert ws.receive_json()["data"]["code"] == "MARKET_NOT_SUPPORTED"  # 이 환경엔 실시간 시세 계좌 없음
+            assert ws.receive_json()["data"]["type"] == "SUBSCRIBED"
             admin("POST", "/admin/kill-switch", json={"scope": "market", "id": "KR", "action": "halt"})
             msg = ws.receive_json()
             assert msg["ch"] == "system" and msg["data"]["type"] == "HALT"

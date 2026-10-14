@@ -50,7 +50,7 @@ class AccountProfile(_Model):
     kr_default_route: KrRoute = "KRX"
     integrated_margin: bool = False
     rate_limit_per_sec: float = Field(default=2.0, gt=0)
-    ws_max_subscriptions: int = Field(default=40, ge=1)
+    ws_max_subscriptions: int = Field(default=41, ge=1)  # 공식: 앱키당 실시간 등록 41건
     trading_enabled: bool = False
     # 미배정 서브계좌의 USD 재고(환전 풀). 최소값 아래로 내려가면 알림 (M6)
     usd_inventory_target: Decimal | None = None
@@ -117,6 +117,20 @@ class ServerConfig(_Model):
         return v
 
 
+class MarketDataConfig(_Model):
+    """시세 수신 설정. 시세는 계좌와 무관하므로 시장마다 실시간 등록 슬롯을 쓸 계좌 하나를 정한다.
+
+    비워 두면 해당 시장을 지원하는 실전 계좌 우선. 실전 앱키의 등록 한도가 작을 때는
+    국내 시세를 모의 계좌로 받을 수 있다 (모의는 KRX 시세만, 통합/NXT 시세 없음).
+    """
+
+    kr_account: str | None = None
+    us_account: str | None = None
+    watchlist: list[str] = Field(default_factory=list)   # 클라이언트 구독과 무관하게 상시 수집할 종목
+    store_ticks: bool = True
+    flush_seconds: float = Field(default=30.0, gt=0)
+
+
 class LoggingConfig(_Model):
     level: str = "INFO"
     retention_days: int = Field(default=30, ge=1)
@@ -126,10 +140,22 @@ class Settings(_Model):
     home: Path
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    market_data: MarketDataConfig = Field(default_factory=MarketDataConfig)
     accounts: dict[str, Account]
     admin_key: SecretStr | None = None
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def _market_data_accounts_valid(self) -> Settings:
+        for market, alias in (("KR", self.market_data.kr_account), ("US", self.market_data.us_account)):
+            if alias is None:
+                continue
+            if alias not in self.accounts:
+                raise ValueError(f"market_data: 계좌 '{alias}' 가 accounts 에 없음")
+            if market not in self.accounts[alias].profile.markets:
+                raise ValueError(f"market_data: 계좌 '{alias}' 는 {market} 미지원")
+        return self
 
     @property
     def config_dir(self) -> Path:
@@ -150,6 +176,10 @@ class Settings(_Model):
     @property
     def data_dir(self) -> Path:
         return self.home / "data"
+
+    @property
+    def ticks_dir(self) -> Path:
+        return self.data_dir / "ticks"
 
     @property
     def logs_dir(self) -> Path:
@@ -239,6 +269,7 @@ def load_settings(home: Path | str | None = None) -> Settings:
             home=home_path,
             server=ServerConfig(**config.get("server", {})),
             logging=LoggingConfig(**config.get("logging", {})),
+            market_data=MarketDataConfig(**config.get("market_data", {})),
             accounts=accounts,
             admin_key=_opt_secret(secrets.get("central", {}).get("admin_key")),
             telegram_bot_token=_opt_secret(secrets.get("telegram", {}).get("bot_token")),
