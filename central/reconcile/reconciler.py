@@ -3,6 +3,8 @@
 - 수량: 종목별로 엄격하게 비교
 - 현금: 시장 통화별로 허용오차 안에서 비교. fx_mode=broker 서브계좌가 있으면 통화별 비교가
   의미 없으므로 현금 비교를 건너뛴다 (6.2.3)
+현금 차이는 수량이 모두 맞을 때 배당, 수수료 오차, 미확인 입출금 순으로 설명해 장부에 기록한다
+(central/reconcile/cash.py, auto_cash). 설명하지 못한 차이만 불일치로 남는다.
 불일치하면 해당 실계좌 x 시장의 신규 주문을 정지하고 이벤트를 남긴다.
 """
 
@@ -19,10 +21,11 @@ from sqlalchemy import select
 from central.broker.base import Broker
 from central.core.events import EventBus
 from central.core.instruments import MARKET_CURRENCY
-from central.core.market_hours import now_kst
+from central.core.market_hours import KST, NEW_YORK, now_kst
 from central.core.money import ZERO
 from central.oms import ledger
 from central.oms.accounts import record_event, tx
+from central.reconcile import cash as cash_rules
 from central.risk.engine import RiskEngine
 from central.storage.db import Database
 from central.storage.models import PositionRow, ReconciliationRow, SubAccountRow
@@ -39,16 +42,19 @@ class ReconcileResult:
     ok: bool
     diffs: list[str]
     cash_checked: bool
+    resolved: tuple[str, ...] = ()
 
 
 class Reconciler:
     def __init__(
         self, db: Database, bus: EventBus, brokers: dict[str, Broker], risk: RiskEngine,
         *, cash_tolerance: dict[str, Decimal] | None = None, clock: Callable[[], datetime] = now_kst,
+        auto_cash: bool = True, fee_gap_bp: Decimal = Decimal("5"),
     ) -> None:
         self.db, self.bus, self.brokers, self.risk = db, bus, brokers, risk
         self.cash_tolerance = cash_tolerance or DEFAULT_CASH_TOLERANCE
         self.clock = clock
+        self.auto_cash, self.fee_gap_bp = auto_cash, fee_gap_bp
 
     async def run(self, broker_alias: str, market: str, *, halt_on_mismatch: bool = True) -> ReconcileResult:
         snap = await self.brokers[broker_alias].snapshot(market)
@@ -71,23 +77,43 @@ class Reconciler:
                 diffs.append(f"{inst} 수량 장부 {ours.get(inst, 0)} / 실계좌 {theirs.get(inst, 0)}")
 
         cash_checked = currency in snap.cash and not broker_fx_subs
-        if cash_checked:
-            gap = cash - snap.cash[currency]
-            if abs(gap) > self.cash_tolerance[currency]:
-                diffs.append(f"{currency} 현금 장부-실계좌 차이 {gap}")
-
-        ok = not diffs
         now = self.clock()
+        day = now.astimezone(KST if market == "KR" else NEW_YORK).date()
+        resolved: list[str] = []
+        tol = self.cash_tolerance[currency]
+        gap = snap.cash[currency] - cash if cash_checked else ZERO      # 실계좌 - 장부
+        auto = cash_checked and abs(gap) > tol and self.auto_cash and not diffs
+        rights = await self._rights(broker_alias, market, day) if auto else []   # 트랜잭션 밖에서 조회
         with tx(self.db, self.bus) as (s, ev):
+            if cash_checked:
+                if auto:
+                    res = cash_rules.resolve(s, ev, broker_alias, market, currency, gap, rights, tolerance=tol,
+                                             fee_gap_bp=self.fee_gap_bp, day=day, at=now)
+                    resolved, gap = res.lines, res.remaining
+                    if res.blocked:
+                        diffs.append(res.blocked)
+                if abs(gap) > tol:
+                    diffs.append(f"{currency} 현금 장부-실계좌 차이 {-gap}")
+                if resolved:
+                    record_event(s, ev, "CASH_RESOLVED", None, {
+                        "broker_account_id": broker_alias, "market": market, "lines": resolved}, now)
+            ok = not diffs
             s.add(ReconciliationRow(broker_account_id=broker_alias, market=market, run_at=now, ok=ok, diffs=diffs))
             record_event(s, ev, "RECONCILE", None, {
                 "broker_account_id": broker_alias, "market": market, "ok": ok, "diffs": diffs,
-                "cash_checked": cash_checked}, now)
+                "cash_checked": cash_checked, "resolved": resolved}, now)
         if not ok:
             log.error("[%s/%s] 대사 불일치: %s", broker_alias, market, diffs)
             if halt_on_mismatch:
                 self.risk.halt("broker_market", f"{broker_alias}:{market}")
-        return ReconcileResult(broker_alias, market, ok, diffs, cash_checked)
+        return ReconcileResult(broker_alias, market, ok, diffs, cash_checked, tuple(resolved))
+
+    async def _rights(self, broker_alias: str, market: str, day):
+        try:
+            return await self.brokers[broker_alias].cash_rights(market, day)
+        except Exception as e:   # 권리 조회 실패는 배당 없이 진행 (미확인 입금으로 남음)
+            log.warning("[%s/%s] 권리 조회 실패: %s", broker_alias, market, e)
+            return []
 
 
 async def bootstrap_from_broker(accounts, broker: Broker, broker_alias: str, markets: list[str]) -> dict:

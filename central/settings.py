@@ -137,9 +137,41 @@ class LoggingConfig(_Model):
 
 
 class ProgramConfig(_Model):
-    """감시자(supervise)가 서버와 함께 띄우는 프로그램. 저장소 루트에서 같은 파이썬으로 실행한다."""
+    """감시자(supervise)가 서버와 함께 띄우는 프로그램. 둘 중 하나로 정한다.
+      command  아무 실행 파일과 인자 (다른 폴더, 다른 venv, 다른 언어). 예: ["C:/bots/a/.venv/Scripts/python.exe", "bot.py"]
+               cwd 를 안 주면 실행 파일이 있는 폴더 (venv 의 Scripts 면 그 venv 를 둔 폴더)
+      args     서버와 같은 파이썬에 넘길 인자, 저장소 루트에서 실행. 예: ["-m", "apps.pilot", "run"]
+    자식에는 CENTRAL_API_URL(서버 주소), CENTRAL_STOP_FILE(정상 종료 요청 파일)이 환경변수로 간다.
+    env 는 central.toml 에 그대로 남으므로 API 키 같은 비밀은 넣지 말 것 (프로그램이 자기 비밀 파일을 읽게)."""
     name: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,31}$")
-    args: list[str] = Field(min_length=1)   # 예: ["-m", "apps.pilot", "run"]
+    args: list[str] = Field(default_factory=list)
+    command: list[str] = Field(default_factory=list)
+    cwd: Path | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _one_way(self) -> ProgramConfig:
+        if bool(self.args) == bool(self.command):
+            raise ValueError(f"프로그램 {self.name}: args 와 command 중 하나만")
+        if self.cwd is not None and not self.cwd.is_absolute():
+            raise ValueError(f"프로그램 {self.name}: cwd 는 절대 경로")
+        return self
+
+    def argv(self, python: str) -> list[str]:
+        return list(self.command) if self.command else [python, *self.args]
+
+    def workdir(self) -> Path:
+        if self.cwd is not None:
+            return self.cwd
+        if not self.command:
+            return REPO_ROOT
+        exe = Path(self.command[0])
+        if not exe.is_absolute():
+            return REPO_ROOT
+        folder = exe.parent
+        if folder.name.lower() in ("scripts", "bin") and folder.parent.name.lower() in (".venv", "venv"):
+            return folder.parent.parent
+        return folder
 
 
 class OpsConfig(_Model):
@@ -147,6 +179,9 @@ class OpsConfig(_Model):
     notify_min_level: Literal["info", "warning", "error"] = "info"
     alert_cooldown_minutes: float = Field(default=15, ge=0)   # 같은 알림 반복 억제
     halt_on_reconcile_mismatch: bool = True
+    # 대사 현금 차이 자동 처리 (central/reconcile/cash.py): 배당, 수수료 오차, 미확인 입출금을 장부에 기록
+    cash_auto_resolve: bool = True
+    fee_gap_bp: Decimal = Field(default=Decimal("5"), ge=0, le=100)   # 오늘 체결대금 대비 이 이내면 수수료 오차로 봄
     backup_keep: int = Field(default=14, ge=1)
     disk_min_free_gb: float = Field(default=20, ge=0)
     ws_down_alert_seconds: int = Field(default=120, ge=10)

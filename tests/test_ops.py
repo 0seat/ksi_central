@@ -172,7 +172,7 @@ def make_app(home: Path, clock: Clock, *, watchlist: list[str] | None = None, db
 async def test_kr_close_reconciles_reports_and_alerts_mismatch(home: Path) -> None:
     clock = Clock(datetime(2026, 10, 14, 15, 50, tzinfo=KST))
     app, real, paper, rec = make_app(home, clock)
-    real.deposit("KRW", D("1000"))                     # 장부에 없는 현금 → real/KR 불일치
+    real.deposit("KRW", D("-1000"))                    # 미배정에 없는 돈이 빠져나감 → real/KR 불일치
     result = await app.ops.scheduler.run("kr_close")
     assert result["ok"] and "paper/KR 대사 일치" in result["detail"] and "real/KR 대사 불일치" in result["detail"]
     assert "대사 불일치 real/KR" in rec.titles("error")
@@ -259,15 +259,20 @@ async def test_event_alerts(home: Path) -> None:
 
 # ───────────── 감시자 ─────────────
 def test_supervisor_restarts_and_stops_children(home: Path) -> None:
+    import sys
+
     settings = load_settings(home)
+    outside = home.parent / "elsewhere"            # 저장소 밖 폴더의 프로그램
+    outside.mkdir()
+    polite = ("import os, time, pathlib; p = pathlib.Path(os.environ['CENTRAL_STOP_FILE'])\n"
+              "print('cwd', pathlib.Path.cwd().name, os.environ['CENTRAL_API_URL'], os.environ['BOT_MODE'])\n"
+              "while not p.exists(): time.sleep(0.1)\nprint('bye')")
+    settings = settings.model_copy(update={"ops": settings.ops.model_copy(update={"programs": [
+        ProgramConfig(name="polite", command=[sys.executable, "-c", polite], cwd=outside, env={"BOT_MODE": "x"})]})})
     rec = RecNotifier()
     sup = Supervisor(settings, notifier=rec)
     crash = "import sys; print('boom'); sys.exit(3)"
-    polite = ("import os, time, pathlib; p = pathlib.Path(os.environ['CENTRAL_STOP_FILE'])\n"
-              "while not p.exists(): time.sleep(0.1)\nprint('bye')")
-    sup.children[0].args = ["-c", crash]
-    sup.children.append(type(sup.children[0])("polite", ["-c", polite], settings.state_dir / "stop" / "polite",
-                                               settings.logs_dir / "polite.console.log"))
+    sup.children[0].argv = [sys.executable, "-c", crash]
     sup.step()
     crashing = sup.children[0]
     crashing.proc.wait(30)
@@ -278,6 +283,20 @@ def test_supervisor_restarts_and_stops_children(home: Path) -> None:
     sup.shutdown()
     assert _time.monotonic() - t0 < 20                          # 종료 파일로 정상 종료 (강제 종료 아님)
     assert sup.children[1].last_exit == 0 and "bye" in sup.children[1].tail()
+    assert "cwd elsewhere http://127.0.0.1:" in sup.children[1].tail() and " x" in sup.children[1].tail()
+
+
+def test_program_config_command_or_args() -> None:
+    with pytest.raises(ValueError):
+        ProgramConfig(name="both", args=["-m", "x"], command=["a.exe"])
+    with pytest.raises(ValueError):
+        ProgramConfig(name="none")
+    with pytest.raises(ValueError):
+        ProgramConfig(name="rel", command=["a.exe"], cwd="relative/dir")
+    venv = ProgramConfig(name="bot", command=["C:/bots/a/.venv/Scripts/python.exe", "bot.py"])
+    assert venv.workdir() == Path("C:/bots/a") and venv.argv("py") == ["C:/bots/a/.venv/Scripts/python.exe", "bot.py"]
+    assert ProgramConfig(name="exe", command=["C:/bots/b/run.exe"]).workdir() == Path("C:/bots/b")
+    assert ProgramConfig(name="mod", args=["-m", "apps.pilot"]).argv("py") == ["py", "-m", "apps.pilot"]
 
 
 # ───────────── 파일럿 로직 ─────────────

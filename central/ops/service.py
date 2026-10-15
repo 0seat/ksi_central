@@ -138,6 +138,9 @@ class Operations:
             self.notifier.warning(f"긴급 정지 {p['scope']} {p['id']}".strip(), key=f"halt:{p['scope']}:{p['id']}")
         elif e.type == "RESUME":
             self.notifier.info(f"정지 해제 {p['scope']} {p['id']}".strip(), key=f"resume:{p['scope']}:{p['id']}")
+        elif e.type == "CASH_RESOLVED":
+            self.notifier.warning(f"대사 현금 차이 자동 처리 {p['broker_account_id']}/{p['market']}",
+                                  "\n".join(f"- {x}" for x in p["lines"]))
         elif e.type in ("DEPOSIT", "WITHDRAW"):
             to = ""
             if p.get("sub_account_id"):

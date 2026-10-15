@@ -1,6 +1,7 @@
 """프로세스 감시자: python -m central supervise
 
-- 서버(serve)와 설정의 추가 프로그램(ops.programs)을 자식 프로세스로 띄우고, 끝나면 다시 띄운다
+- 서버(serve)와 설정의 추가 프로그램(ops.programs)을 자식 프로세스로 띄우고, 끝나면 다시 띄운다.
+  추가 프로그램은 저장소 밖 아무 폴더의 실행 파일이어도 된다 (command, cwd). 서버 주소는 CENTRAL_API_URL 로 준다
 - 재시작 간격은 5초부터 두 배씩 최대 5분. 10분 넘게 살아 있었으면 다시 5초부터
 - 자식이 끝나면 Discord 로 알린다 (종료 코드, 콘솔 출력 마지막 줄)
 - 한 번에 하나만 실행한다 (state/supervisor.lock 잠금)
@@ -44,9 +45,11 @@ def status_path(settings: Settings) -> Path:
 @dataclass
 class Child:
     name: str
-    args: list[str]
+    argv: list[str]
     stop_file: Path
     console_log: Path
+    cwd: Path = REPO_ROOT
+    extra_env: dict[str, str] = field(default_factory=dict)
     proc: subprocess.Popen | None = None
     started: float = 0.0
     started_at: datetime | None = None
@@ -65,10 +68,10 @@ class Child:
         self._out = self.console_log.open("ab")
         self._out.write(f"\n===== {now_kst():%Y-%m-%d %H:%M:%S} start {self.name} =====\n".encode())
         self._out.flush()
-        env = {**os.environ, "CENTRAL_STOP_FILE": str(self.stop_file), "CENTRAL_SUPERVISED": "1",
+        env = {**os.environ, **self.extra_env, "CENTRAL_STOP_FILE": str(self.stop_file), "CENTRAL_SUPERVISED": "1",
                "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
-        self.proc = subprocess.Popen([sys.executable, *self.args], cwd=REPO_ROOT, env=env, stdin=subprocess.DEVNULL,
+        self.proc = subprocess.Popen(self.argv, cwd=self.cwd, env=env, stdin=subprocess.DEVNULL,
                                      stdout=self._out, stderr=subprocess.STDOUT, creationflags=flags)
         self.started, self.started_at = time.monotonic(), now_kst()
         log.info("시작 %s pid=%d", self.name, self.proc.pid)
@@ -107,9 +110,16 @@ class Supervisor:
         self.settings = settings
         self.notifier = notifier or notifier_from_settings(settings, source="중앙증권 감시자")
         stop_dir = settings.state_dir / "stop"
-        children = [("serve", ["-m", "central", "serve", "--no-console-log"])]
-        children += [(p.name, p.args) for p in settings.ops.programs]
-        self.children = [Child(n, a, stop_dir / n, settings.logs_dir / f"{n}.console.log") for n, a in children]
+        host = settings.server.hosts[0]
+        api = {"CENTRAL_API_URL": f"http://{f'[{host}]' if ':' in host else host}:{settings.server.port}",
+               "CENTRAL_HOME": str(settings.home)}
+
+        def child(name: str, argv: list[str], cwd: Path = REPO_ROOT, env: dict[str, str] | None = None) -> Child:
+            return Child(name, argv, stop_dir / name, settings.logs_dir / f"{name}.console.log", cwd,
+                         {**api, **(env or {})})
+
+        self.children = [child("serve", [sys.executable, "-m", "central", "serve", "--no-console-log"])]
+        self.children += [child(p.name, p.argv(sys.executable), p.workdir(), p.env) for p in settings.ops.programs]
         self.stop_file = stop_request_path(settings)
         self._lock_fd: int | None = None
         self._job = None

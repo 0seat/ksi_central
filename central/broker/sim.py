@@ -65,6 +65,7 @@ class SimBroker(Broker):
         self.fee_fn = fee_fn or (lambda *_: (ZERO, ZERO))
         self.clock = clock
         self.cash: dict[str, Decimal] = defaultdict(lambda: ZERO)
+        self.rights: dict = {}
         self.positions: dict[str, int] = defaultdict(int)
         self.avg: dict[str, Decimal] = defaultdict(lambda: ZERO)
         self.quotes: dict[str, Quote] = {}
@@ -85,6 +86,14 @@ class SimBroker(Broker):
     # ───────────── 테스트 조작 ─────────────
     def deposit(self, currency: str, amount: Decimal) -> None:
         self.cash[currency] += amount
+
+    def pay_right(self, right, currency: str, day) -> None:
+        """시험용: 배당 등 권리 현금 지급 (세후 금액이 현금에 들어오고 cash_rights 로 조회된다)."""
+        self.cash[currency] += right.gross - right.tax
+        self.rights.setdefault(day, []).append(right)
+
+    async def cash_rights(self, market: str, day):
+        return [r for r in self.rights.get(day, []) if r.instrument_id.startswith(f"{market}:")]
 
     def set_quote(self, instrument_id: str, last: Decimal, upper: Decimal | None = None, lower: Decimal | None = None) -> None:
         self.quotes[instrument_id] = Quote(last, upper, lower)

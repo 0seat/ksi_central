@@ -76,8 +76,12 @@ python -m central supervise       # 서버 + 추가 프로그램을 감시하며
 ```
 - API 문서: `http://127.0.0.1:8700/api/v1/docs`
 - 관리자 API(`/api/v1/admin/...`, 헤더 `X-Admin-Key`)로 서브계좌 생성, 자금 배정, API 키 발급, 거래 스위치, 긴급 정지를 합니다.
+- 서브계좌 준비: `python -m central sub create MYBOT --account paper --krw 3000000 --key-out C:\bots\mybot\central_key.toml`
+  (만들기, 자금, 한도, API 키 파일까지). 프로그램은 저장소 밖 어디서든 `http://127.0.0.1:8700/api/v1` 로 붙습니다.
+  파이썬 SDK 는 서버 없이 따로 설치: `pip install <저장소>\sdk` 후 `CentralClient.from_file(키 파일)`.
 - 실계좌에 돈을 넣거나 뺄 때는 `POST /admin/deposits`, `POST /admin/withdrawals` 로 장부에 반영합니다.
-  입금은 그날 대사(국내 15:45, 미국 16:20 ET) 전에, 출금은 실제로 빼기 전에 반영해야 대사 불일치로 주문이 정지되지 않습니다.
+  알리지 않아도 장 마감 대사가 현금 차이를 배당(국내), 수수료 오차, 미확인 입출금(미배정) 순으로 설명해 기록하고
+  알립니다. 미배정에 없는 돈이 빠져나간 경우만 불일치로 주문을 정지합니다. 배당 재배정은 `POST /admin/dividends`.
 - 서브계좌 프로그램은 발급받은 키(헤더 `X-API-Key`)로 `/api/v1/me/...`, `/api/v1/market/...`, `/api/v1/ws` 를 씁니다.
 - 바인딩은 `127.0.0.1` 과 Tailscale 주소(100.64.0.0/10)만 허용합니다.
 
@@ -126,7 +130,7 @@ Windows와 Python 3.12 이상이 필요합니다.
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+pip install -e ".[dev]" -e sdk
 pre-commit install
 ```
 

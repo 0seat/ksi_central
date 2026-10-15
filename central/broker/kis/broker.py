@@ -25,6 +25,7 @@ from central.broker.base import (
     BrokerReject,
     BrokerUnavailable,
     Candle,
+    CashRight,
     OrderBook,
     Quote,
 )
@@ -435,6 +436,29 @@ class KisBroker(Broker):
                 ordered_at=str(r.get("ord_tmd", "")),
             ) for r in rows
         ]
+
+    async def cash_rights(self, market: str, day: date) -> list[CashRight]:
+        """국내: 기간별계좌권리현황(CTRGA011R)에서 현금지급일이 day 이고 금액이 있는 행. 미국과 모의는 조회 수단 없음.
+        필드 의미(최종배정금액=세전, 세금금액=원천징수)는 실제 배당 지급 때 재확인 필요: 대사는 금액이
+        현금 차이와 정확히 맞을 때만 배당으로 인정하므로 해석이 틀리면 미확인 입금으로 남는다."""
+        if market != "KR" or self.account.profile.env != "real":
+            return []
+        ymd = f"{day:%Y%m%d}"
+        pages = await self.rest.paginate(tr.KR_PERIOD_RIGHTS, {
+            **self.rest.account_params(), "INQR_DVSN": "03", "INQR_STRT_DT": ymd, "INQR_END_DT": ymd,
+            "CUST_RNCNO25": "", "HMID": "", "RGHT_TYPE_CD": "", "PDNO": "", "PRDT_TYPE_CD": ""}, PAGE_100)
+        out = []
+        for r in (r for p in pages for r in _rows(p.body, "output")):
+            amount = _d(r.get("last_alct_amt"))
+            if r.get("cash_dfrm_dt") != ymd or amount <= 0:
+                continue
+            log.info("[%s] 권리 현금 지급 %s", self.account_id,
+                     {k: v for k, v in r.items() if k != "acno10" and v not in ("", None)})
+            code = (r.get("shtn_pdno") or r.get("pdno") or "").strip()
+            bass = r.get("bass_dt") or ""
+            out.append(CashRight(f"KR:{code[-6:]}", datetime.strptime(bass, "%Y%m%d").date() if len(bass) == 8 else None,
+                                 _i(r.get("cblc_qty")), amount, _d(r.get("tax_amt")), r.get("rght_type_cd") or "dividend"))
+        return out
 
     async def snapshot(self, market: str) -> AccountSnapshot:
         ap = self.rest.account_params()

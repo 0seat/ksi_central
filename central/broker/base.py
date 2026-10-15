@@ -133,6 +133,17 @@ class AccountSnapshot:
     fx_rate: Decimal | None = None
 
 
+@dataclass(frozen=True)
+class CashRight:
+    """실계좌에 그날 현금으로 들어온 권리 (배당 등). 대사에서 현금 차이를 설명하는 데 쓴다."""
+    instrument_id: str
+    record_date: date | None   # 기준일 (이날 보유 수량으로 배정)
+    qty: int                   # 기준일 실계좌 보유 수량 (0 이면 모름)
+    gross: Decimal             # 배정 금액 (세전)
+    tax: Decimal               # 원천징수
+    kind: str = "dividend"
+
+
 class Broker(ABC):
     account_id: str
 
@@ -188,6 +199,10 @@ class Broker(ABC):
     async def market_days(self, start: date, pages: int = 3) -> list[tuple[date, bool]]:
         """국내 개장일 목록 (날짜, 개장 여부)."""
         raise BrokerUnavailable(f"{type(self).__name__}: 개장일 조회 미지원")
+
+    async def cash_rights(self, market: str, day: date) -> list[CashRight]:
+        """day 에 현금으로 지급된 권리 (배당 등). 조회 수단이 없으면 빈 목록 (대사가 미확인 입금으로 처리)."""
+        return []
 
     @abstractmethod
     async def order_statuses(self, market: str, day: date) -> list[BrokerOrderStatus]: ...

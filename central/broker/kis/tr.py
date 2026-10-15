@@ -70,6 +70,9 @@ OVERSEAS_INDEX_MINUTE = _same(f"{_OP}/quotations/inquire-time-indexchartprice", 
 KR_MARKET_CAP = _same(f"{_DS}/ranking/market-cap", "FHPST01740000")
 US_MARKET_CAP = _same(f"{_OS}/ranking/market-cap", "HHDFS76350100")
 
+# 기간별계좌권리현황조회 [국내주식-211] (HTS 7344). 모의 미지원. INQR_DVSN 은 공식 예제의 "03"
+KR_PERIOD_RIGHTS = Tr(f"{_DS}/trading/period-rights", "GET", "CTRGA011R", None)
+
 US_PRICE = _same(f"{_OP}/quotations/price", "HHDFS00000300")
 US_DAILY_CHART = _same(f"{_OP}/quotations/dailyprice", "HHDFS76240000")
 US_MINUTE_CHART = _same(f"{_OP}/quotations/inquire-time-itemchartprice", "HHDFS76950200")

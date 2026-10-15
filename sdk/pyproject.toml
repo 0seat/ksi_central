@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "central-client"
+version = "0.1.0"
+description = "중앙증권 서버 클라이언트 SDK (HTTP/WebSocket 래퍼, 서버 코드 불필요)"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.27", "websockets>=13.0"]
+
+[tool.setuptools]
+py-modules = ["central_client"]

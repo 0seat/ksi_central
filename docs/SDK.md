@@ -6,7 +6,11 @@
 
 - 서버 주소: `http://127.0.0.1:8700` (같은 PC) 또는 Tailscale IP. 모든 경로 앞에 `/api/v1`
 - 대화형 문서: `http://127.0.0.1:8700/api/v1/docs` (서버 실행 중)
-- 서버 코드 위치: `central/api/me.py`, `central/api/market.py`, `central/api/ws.py`, SDK 는 `central/client.py`
+- 서버 코드 위치: `central/api/me.py`, `central/api/market.py`, `central/api/ws.py`, SDK 는 `sdk/central_client.py`
+- 프로그램은 저장소 밖 아무 폴더, 아무 언어여도 됩니다. HTTP 로 `X-API-Key` 헤더만 붙이면 됩니다.
+  파이썬이면 SDK 를 쓰는 편이 편합니다. SDK 는 HTTP 호출을 감싼 라이브러리일 뿐 서버를 띄우지 않으며,
+  서버 코드 없이 따로 설치됩니다: `pip install E:_project_tick_trading\sdk` (의존성 httpx, websockets 뿐).
+  또는 `sdk/central_client.py` 파일 하나를 복사해도 됩니다.
 
 ---
 
@@ -32,11 +36,13 @@
 ## 2. 빠른 시작
 
 ```python
-import asyncio, os
-from central.client import CentralClient, CentralError
+import asyncio
+from central_client import CentralClient, CentralError   # 저장소 안에서는 central.client 도 같음
 
 async def main():
-    async with CentralClient(os.environ["CENTRAL_URL"], os.environ["CENTRAL_API_KEY"]) as cs:
+    # python -m central sub create 가 만든 키 파일 (base_url, api_key)
+    async with CentralClient.from_file(r"C:\bots\mybot\central_key.toml") as cs:
+    # 또는 CentralClient.from_env(): CENTRAL_API_URL + CENTRAL_API_KEY 또는 CENTRAL_API_KEY_FILE
         me = await cs.me()                       # 서브계좌 정보, 거래 가능 여부, 한도
         q = await cs.quote("KR:005930")          # 현재가
         o = await cs.buy("KR:005930", 1, q["lower_limit"], client_order_id="demo-001")   # 지정가
@@ -192,7 +198,18 @@ KIS 가 접수를 거부한 주문은 예외가 아니라 `status="REJECTED"`, `
 ## 8. 새 파일럿/프로그램 만들기
 
 ### 8.1 서브계좌와 키 준비 (관리자 작업)
-`apps/pilot/__main__.py` 의 `setup` 을 본뜨면 됩니다. 관리자 API(`X-Admin-Key`, 키는 secrets.toml 에서 코드로 읽고 출력하지 않음):
+명령 한 줄로 끝납니다 (서버가 떠 있어야 함. 관리자 키는 secrets.toml 에서 읽고 출력하지 않음):
+```powershell
+python -m central sub create MYBOT --account paper --markets KR --krw 3000000 `
+    --key-out C:\bots\mybot\central_key.toml --max-order-amount 1000000 --max-open-orders 4 --symbols KR:005930
+python -m central sub list --account paper
+python -m central sub fund MYBOT --account paper --krw 1000000     # 음수면 미배정으로 돌려받음
+python -m central sub key MYBOT --account paper --key-out <경로> --revoke-old
+python -m central sub limits MYBOT --account paper --market KR --max-daily-loss 100000
+```
+키는 화면에 나오지 않고 `--key-out` 파일(기본 `%CENTRAL_HOME%\secretspps\<이름>.toml`)에만 쓰입니다. 저장소 폴더 안에는 쓰지 않습니다.
+
+같은 일을 관리자 API 로 하려면:
 1. `POST /admin/sub-accounts` `{"broker_account_id": "paper", "name": "<이름>", "type": "app", "markets": ["KR"]}`
 2. `POST /admin/transfers` `{"from": <미배정 id>, "to": <id>, "currency": "KRW", "amount": "5000000"}`
 3. `PUT /admin/sub-accounts/{id}/risk-limits` `{"market": "KR", "max_order_amount": "...", "max_open_orders": 4, "allowed_symbols": [...]}`
@@ -204,9 +221,16 @@ KIS 가 접수를 거부한 주문은 예외가 아니라 `status="REJECTED"`, `
 `%CENTRAL_HOME%\config\central.toml`:
 ```toml
 [[ops.programs]]
-name = "pilot2"                       # 소문자, 숫자, -, _
-args = ["-m", "apps.pilot2", "run"]   # 저장소 루트에서 같은 파이썬으로 실행
+name = "mybot"                        # 소문자, 숫자, -, _
+command = ["C:/bots/mybot/.venv/Scripts/python.exe", "bot.py"]   # 아무 실행 파일 (다른 폴더, 다른 venv, 다른 언어)
+# cwd = "C:/bots/mybot"               # 생략하면 실행 파일 폴더 (venv 의 Scripts 면 venv 를 둔 폴더)
+env = { CENTRAL_API_KEY_FILE = "C:/bots/mybot/central_key.toml" }   # 경로만. 키 값 자체는 넣지 말 것
+
+[[ops.programs]]
+name = "pilot"
+args = ["-m", "apps.pilot", "run"]    # 저장소 안 프로그램: 서버와 같은 파이썬, 저장소 루트에서
 ```
+자식 프로세스에는 `CENTRAL_API_URL`(서버 주소), `CENTRAL_STOP_FILE`, `CENTRAL_HOME` 이 환경변수로 들어갑니다.
 감시자를 재시작하면(`python -m central service stop` 후 `start`) 함께 뜨고, 죽으면 다시 뜨고 Discord 로 알립니다.
 
 ### 8.3 감시자 아래에서 지킬 것

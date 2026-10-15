@@ -30,10 +30,18 @@ disk_min_free_gb = 20
 ws_down_alert_seconds = 120     # 실시간 세션이 이만큼 끊기면 알림
 stale_tick_minutes = 5          # 장중 watchlist 종목 체결이 이만큼 없으면 알림
 
-# python -m central supervise 가 서버와 함께 띄우고 감시하는 프로그램 (저장소 루트, 같은 파이썬)
+# 대사 현금 차이 자동 처리 (배당, 수수료 오차, 미확인 입출금을 장부에 기록. docs/PLAN.md 6.8.1)
+# cash_auto_resolve = true
+# fee_gap_bp = 5                  # 오늘 체결대금 대비 이 이내의 차이는 수수료 오차로 봄
+
+# python -m central supervise 가 서버와 함께 띄우고 감시하는 프로그램
+# [[ops.programs]]
+# name = "mybot"
+# command = ["C:/bots/mybot/.venv/Scripts/python.exe", "bot.py"]   # 저장소 밖 아무 실행 파일
+# env = { CENTRAL_API_KEY_FILE = "C:/bots/mybot/central_key.toml" }
 # [[ops.programs]]
 # name = "pilot"
-# args = ["-m", "apps.pilot", "run"]
+# args = ["-m", "apps.pilot", "run"]   # 저장소 안: 서버와 같은 파이썬, 저장소 루트에서
 
 [history]
 # 과거 시세 보관소 (%CENTRAL_HOME%\data\history). 원주가와 기업행위(분할/병합/배당)를 따로 저장하고

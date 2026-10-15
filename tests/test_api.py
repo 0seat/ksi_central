@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal as D
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from central.api.server import create_app
 from central.app import CentralApp
 from central.broker.sim import SimBroker
 from central.client import CentralClient, CentralError
-from central.settings import SettingsError, load_settings
+from central.settings import REPO_ROOT, SettingsError, load_settings
 from central.storage import migrate
 from central.storage.db import Base, Database
 from tests.conftest import CENTRAL_TOML, write_home
@@ -266,11 +267,7 @@ async def test_admin_reconcile_and_fee_schedule(env: Env) -> None:
 async def test_deposit_and_withdraw_keep_reconcile_ok(env: Env) -> None:
     env.fund("KRW", "1000000")
     sub_id, _ = await env.new_sub("A", ["KR"])
-    env.sim.deposit("KRW", D("500000"))          # 실계좌 입금, 장부 반영 전에는 불일치
-    res = await env.admin("POST", "/admin/reconcile", json={"broker_account_id": "real", "market": "KR"})
-    assert res["ok"] is False
-    await env.admin("POST", "/admin/kill-switch", json={"scope": "broker_market", "id": "real:KR", "action": "resume"})
-
+    env.sim.deposit("KRW", D("500000"))          # 실계좌 입금을 대사 전에 장부에 반영
     out = await env.admin("POST", "/admin/deposits", json={
         "broker_account_id": "real", "currency": "KRW", "amount": "500000", "to": sub_id, "memo": "입금 10-15"})
     assert out["unallocated"]["balances"]["KRW"]["cash"] == "1000000"
@@ -366,3 +363,48 @@ def test_gen_admin_key_writes_without_printing(tmp_path: Path, monkeypatch: pyte
     assert key.startswith("csadm_") and len(key) > 40
     assert key not in capsys.readouterr().out
     assert main(["gen-admin-key"]) == 1  # 이미 있으면 --force 없이는 교체하지 않음
+
+
+# ───────────── 서브계좌 CLI ─────────────
+def test_sub_cli_create_fund_key(home: Path, tmp_path: Path, capsys) -> None:
+    import argparse
+
+    from fastapi.testclient import TestClient
+
+    from central.ops import sub_cli
+    from central_client import CentralClient as SdkClient
+
+    env = Env(home)
+    env.fund("KRW", "1000000")
+    settings = env.app.settings
+    admin = sub_cli._Admin(settings, "http://test")
+    admin.http = TestClient(env.api, base_url="http://test/api/v1", headers=ADMIN)
+    parser = argparse.ArgumentParser()
+    sub_cli.add_parser(parser.add_subparsers())
+    key_file = tmp_path / "bot" / "central_key.toml"
+
+    def cli(*argv: str) -> int:
+        return sub_cli.run(parser.parse_args(["sub", *argv]), settings, admin)
+
+    assert cli("create", "MYBOT", "--account", "real", "--markets", "KR", "--krw", "300000", "--key-out",
+               str(key_file), "--max-open-orders", "3", "--symbols", "KR:005930", "US:AAPL") == 0
+    out = capsys.readouterr().out
+    text = key_file.read_text(encoding="utf-8")
+    assert 'api_key = "cs_' in text and "cs_" not in out          # 키는 파일에만
+    sdk = SdkClient.from_file(key_file, transport=httpx.ASGITransport(app=env.api))
+    me = asyncio.run(sdk.me())
+    assert me["name"] == "MYBOT" and asyncio.run(sdk.balance())["KRW"]["cash"] == "300000"
+    limits = admin("GET", f"/admin/sub-accounts/{me['id']}")
+    assert "KR:005930" in str(limits) and "US:AAPL" not in str(limits)
+
+    assert cli("fund", "MYBOT", "--account", "real", "--krw", "-100000") == 0
+    assert asyncio.run(sdk.balance())["KRW"]["cash"] == "200000"
+    with pytest.raises(SystemExit, match="이미 있음"):
+        cli("create", "MYBOT", "--account", "real")
+    with pytest.raises(SystemExit, match="저장소 안"):
+        cli("key", "MYBOT", "--account", "real", "--key-out", str(REPO_ROOT / "leak.toml"))
+    assert cli("key", "MYBOT", "--account", "real", "--key-out", str(key_file), "--revoke-old") == 0
+    assert key_file.read_text(encoding="utf-8") != text
+    old = SdkClient(BASE, text.split('api_key = "')[1].split('"')[0], transport=httpx.ASGITransport(app=env.api))
+    with pytest.raises(Exception):
+        asyncio.run(old.balance())

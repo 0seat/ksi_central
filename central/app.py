@@ -78,7 +78,8 @@ class CentralApp:
             clock=clock,
         )
         self.sync = OrderSync(self.orders, clock=clock)
-        self.reconciler = Reconciler(self.db, self.bus, self.brokers, self.risk, clock=clock)
+        self.reconciler = Reconciler(self.db, self.bus, self.brokers, self.risk, clock=clock,
+                                     auto_cash=settings.ops.cash_auto_resolve, fee_gap_bp=settings.ops.fee_gap_bp)
 
         for alias, broker in self.brokers.items():
             if isinstance(broker, KisBroker):

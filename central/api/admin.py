@@ -216,6 +216,44 @@ def withdraw(app: App, body: WithdrawBody):
     return ok(_external_view(app, alias, body.from_sub_account_id))
 
 
+class DividendBody(_Body):
+    broker_account_id: str
+    symbol: str
+    amount: Money = Field(gt=0)                        # 실제 들어온 세후 금액 (시장 통화)
+    tax: Money = Field(default=Decimal("0"), ge=0)     # 원천징수 (기록용)
+    record_date: date | None = None                    # 기준일. 주면 그날 보유 수량으로 나눔
+    allocations: dict[int, int] | None = None          # {서브계좌 id: 수량} 직접 지정
+    source: Literal["external", "unidentified"] = "external"
+
+
+@router.post("/dividends")
+def dividend(app: App, body: DividendBody):
+    """배당을 보유 서브계좌에 수량 비례로 DIVIDEND.
+    source=external: 아직 장부에 없는 입금 (대사 전에 반영). unidentified: 대사가 미배정에 넣은 미확인 입금을 재분류."""
+    from central.core.instruments import MARKET_CURRENCY
+    from central.oms.accounts import tx
+    from central.reconcile.cash import holdings_at, post_dividend
+
+    alias = _alias(app, body.broker_account_id)
+    symbol = body.symbol.upper()
+    market = symbol.partition(":")[0]
+    if market not in MARKET_CURRENCY:
+        raise OmsError("INVALID_REQUEST", f"종목 형식 오류: {body.symbol}")
+    currency = MARKET_CURRENCY[market]
+    memo = f"배당{f' 기준일 {body.record_date}' if body.record_date else ''} 원천징수 {body.tax} (관리자)"
+    with tx(app.db, app.bus) as (s, ev):
+        holders = body.allocations
+        if holders is None:
+            holders = holdings_at(s, alias, symbol, body.record_date)
+        else:
+            for sub_id in holders:
+                if app.accounts.get(sub_id).broker_account_id != alias:
+                    raise OmsError("INVALID_REQUEST", f"서브계좌 {sub_id} 는 {alias} 소속이 아님")
+        parts = post_dividend(s, ev, alias, symbol, currency, body.amount, holders, at=app.clock(), memo=memo,
+                              from_unidentified=body.source == "unidentified")
+    return ok({"symbol": symbol, "currency": currency, "allocated": {str(k): v for k, v in parts.items()}})
+
+
 class FxBody(_Body):
     sub_account_id: int
     from_currency: CurrencyCode
