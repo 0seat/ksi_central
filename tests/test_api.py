@@ -263,6 +263,42 @@ async def test_admin_reconcile_and_fee_schedule(env: Env) -> None:
     assert res.status_code == 400
 
 
+async def test_deposit_and_withdraw_keep_reconcile_ok(env: Env) -> None:
+    env.fund("KRW", "1000000")
+    sub_id, _ = await env.new_sub("A", ["KR"])
+    env.sim.deposit("KRW", D("500000"))          # 실계좌 입금, 장부 반영 전에는 불일치
+    res = await env.admin("POST", "/admin/reconcile", json={"broker_account_id": "real", "market": "KR"})
+    assert res["ok"] is False
+    await env.admin("POST", "/admin/kill-switch", json={"scope": "broker_market", "id": "real:KR", "action": "resume"})
+
+    out = await env.admin("POST", "/admin/deposits", json={
+        "broker_account_id": "real", "currency": "KRW", "amount": "500000", "to": sub_id, "memo": "입금 10-15"})
+    assert out["unallocated"]["balances"]["KRW"]["cash"] == "1000000"
+    assert out["sub_account"]["balances"]["KRW"]["cash"] == "500000"
+    res = await env.admin("POST", "/admin/reconcile", json={"broker_account_id": "real", "market": "KR"})
+    assert res["ok"] is True
+
+    res = await env.http.post("/admin/withdrawals", headers=ADMIN, json={
+        "broker_account_id": "real", "currency": "KRW", "amount": "600000", "from": sub_id})
+    assert res.status_code == 400 and res.json()["error"]["code"] == "INSUFFICIENT_CASH"
+    out = await env.admin("POST", "/admin/withdrawals", json={
+        "broker_account_id": "real", "currency": "KRW", "amount": "200000", "from": sub_id})
+    assert out["sub_account"]["balances"]["KRW"]["cash"] == "300000"
+    assert out["unallocated"]["balances"]["KRW"]["cash"] == "1000000"
+    env.sim.deposit("KRW", D("-200000"))         # 실계좌 출금
+    res = await env.admin("POST", "/admin/reconcile", json={"broker_account_id": "real", "market": "KR"})
+    assert res["ok"] is True
+
+    for bad in ({"amount": "0"}, {"amount": "1", "broker_account_id": "nope"}, {"amount": "1", "to": 9999}):
+        res = await env.http.post("/admin/deposits", headers=ADMIN, json={
+            "broker_account_id": "real", "currency": "KRW", **bad})
+        assert res.status_code in (400, 404), bad
+    other = await env.admin("POST", "/admin/sub-accounts", json={"broker_account_id": "paper", "name": "P", "markets": ["KR"]})
+    res = await env.http.post("/admin/deposits", headers=ADMIN, json={
+        "broker_account_id": "real", "currency": "KRW", "amount": "1", "to": other["id"]})
+    assert res.status_code == 400
+
+
 async def test_market_endpoints(env: Env) -> None:
     _, key = await env.new_sub("A", ["KR"])
     h = {"X-API-Key": key}

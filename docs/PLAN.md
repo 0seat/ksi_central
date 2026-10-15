@@ -449,6 +449,8 @@ KIS 보관 깊이 실측 (2026-10-14/15):
 | PUT | `/admin/sub-accounts/{id}/risk-limits` | 시장별 한도 |
 | POST | `/admin/sub-accounts/{id}/api-keys` | API 키 발급 (평문은 1회만 반환) |
 | DELETE | `/admin/api-keys/{key_id}` | 폐기 |
+| POST | `/admin/deposits` | 실계좌 입금 반영 `{broker_account_id, currency, amount, to?, memo}`: 미배정에 DEPOSIT, to 가 있으면 바로 이체. 그날 대사 전에 반영해야 현금 불일치 정지가 안 걸림 |
+| POST | `/admin/withdrawals` | 실계좌 출금 반영 `{broker_account_id, currency, amount, from?, memo}`: from 에서 미배정으로 옮긴 뒤 WITHDRAW. 주문 가능 현금 초과는 거부. 실제 출금 전에 반영 |
 | POST | `/admin/transfers` | `{from, to, currency, amount}` |
 | POST | `/admin/fx` | 수동 환전 반영 |
 | POST | `/admin/positions/transfer` | 보유종목 이동 |

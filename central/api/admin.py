@@ -175,6 +175,47 @@ def transfer(app: App, body: TransferBody):
                "to": _sub_view(app, app.accounts.get(body.to_sub_account_id))})
 
 
+class DepositBody(_Body):
+    broker_account_id: str
+    currency: CurrencyCode
+    amount: Money = Field(gt=0)
+    to_sub_account_id: int | None = Field(default=None, alias="to")
+    memo: str = Field(default="", max_length=200)
+
+
+class WithdrawBody(_Body):
+    broker_account_id: str
+    currency: CurrencyCode
+    amount: Money = Field(gt=0)
+    from_sub_account_id: int | None = Field(default=None, alias="from")
+    memo: str = Field(default="", max_length=200)
+
+
+def _external_view(app, alias: str, sub_id: int | None) -> dict:
+    out = {"unallocated": _sub_view(app, app.accounts.unallocated(alias))}
+    if sub_id is not None:
+        out["sub_account"] = _sub_view(app, app.accounts.get(sub_id))
+    return out
+
+
+@router.post("/deposits")
+def deposit(app: App, body: DepositBody):
+    """실계좌에 입금한 돈을 장부에 반영 (미배정에 DEPOSIT, to 를 주면 그 서브계좌로 바로 이체).
+    입금 후 그날 대사(국내 15:45, 미국 16:20 ET) 전에 반영해야 현금 불일치로 정지되지 않는다."""
+    alias = _alias(app, body.broker_account_id)
+    app.accounts.deposit(alias, body.currency, body.amount, body.memo, body.to_sub_account_id)
+    return ok(_external_view(app, alias, body.to_sub_account_id))
+
+
+@router.post("/withdrawals")
+def withdraw(app: App, body: WithdrawBody):
+    """실계좌에서 출금한 돈을 장부에 반영 (from 을 주면 그 서브계좌에서 미배정으로 옮긴 뒤 WITHDRAW).
+    주문 가능 현금을 넘으면 거부. 실제 출금 전에 반영해 두면 그사이 그 돈으로 주문이 나가지 않는다."""
+    alias = _alias(app, body.broker_account_id)
+    app.accounts.withdraw(alias, body.currency, body.amount, body.memo, body.from_sub_account_id)
+    return ok(_external_view(app, alias, body.from_sub_account_id))
+
+
 class FxBody(_Body):
     sub_account_id: int
     from_currency: CurrencyCode

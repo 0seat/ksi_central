@@ -138,6 +138,12 @@ class Operations:
             self.notifier.warning(f"긴급 정지 {p['scope']} {p['id']}".strip(), key=f"halt:{p['scope']}:{p['id']}")
         elif e.type == "RESUME":
             self.notifier.info(f"정지 해제 {p['scope']} {p['id']}".strip(), key=f"resume:{p['scope']}:{p['id']}")
+        elif e.type in ("DEPOSIT", "WITHDRAW"):
+            to = ""
+            if p.get("sub_account_id"):
+                to = f" ({'→' if e.type == 'DEPOSIT' else '←'} 서브계좌 {p['sub_account_id']})"
+            self.notifier.info(f"{'입금' if e.type == 'DEPOSIT' else '출금'} 반영 {p['broker_account_id']} "
+                               f"{p['currency']} {p['amount']}{to}", p.get("memo") or "")
         elif e.type == "TRADING_ENABLED":
             self.notifier.info(f"거래 스위치 {p['broker_account_id']} {'켬' if p['enabled'] else '끔'}",
                                key=f"trading:{p['broker_account_id']}:{p['enabled']}")

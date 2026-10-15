@@ -179,6 +179,59 @@ class AccountService:
             kind = "DEPOSIT" if amount >= 0 else "WITHDRAW"
             ledger.post(s, un.id, currency, kind, q_cash(amount, currency), at=self.clock(), memo=memo or None)
 
+    def deposit(self, broker_account_id: str, currency: str, amount: Decimal, memo: str = "",
+                to_id: int | None = None) -> None:
+        """실계좌 입금을 장부에 반영: 미배정에 DEPOSIT, to_id 가 있으면 같은 트랜잭션에서 그 서브계좌로 이체.
+        입금 후 대사 전에 반영해야 현금 불일치로 정지되지 않는다."""
+        self._move_external(broker_account_id, currency, amount, memo, to_id, "DEPOSIT")
+
+    def withdraw(self, broker_account_id: str, currency: str, amount: Decimal, memo: str = "",
+                 from_id: int | None = None) -> None:
+        """실계좌 출금을 장부에 반영: from_id 가 있으면 먼저 미배정으로 이체한 뒤 미배정에서 WITHDRAW.
+        미배정의 주문 가능 현금을 넘으면 거부."""
+        self._move_external(broker_account_id, currency, amount, memo, from_id, "WITHDRAW")
+
+    def _move_external(self, broker_account_id: str, currency: str, amount: Decimal, memo: str,
+                       sub_id: int | None, kind: str) -> None:
+        self._check_currency(currency)
+        amount = q_cash(amount, currency)
+        if amount <= 0:
+            raise OmsError("INVALID_REQUEST", "금액은 0보다 커야 함")
+        with tx(self.db, self.bus) as (s, ev):
+            un = self._find(s, broker_account_id, UNALLOCATED)
+            if un is None:
+                raise OmsError("NOT_FOUND", f"실계좌 {broker_account_id} 미등록")
+            sub = None
+            if sub_id is not None and sub_id != un.id:
+                sub = self._get(s, sub_id)
+                if sub.broker_account_id != broker_account_id:
+                    raise OmsError("INVALID_REQUEST", f"서브계좌 {sub_id} 는 실계좌 {broker_account_id} 소속이 아님")
+                if sub.status == "closed":
+                    raise OmsError("INVALID_REQUEST", f"해지된 서브계좌 {sub_id}")
+            now, note = self.clock(), memo or None
+            if kind == "DEPOSIT":
+                dep = ledger.post(s, un.id, currency, "DEPOSIT", amount, at=now, memo=note)
+                if sub is not None:
+                    out = ledger.post(s, un.id, currency, "TRANSFER_OUT", -amount, at=now, ref_type="sub",
+                                      ref_id=sub.id, memo=note)
+                    ledger.post(s, sub.id, currency, "TRANSFER_IN", amount, at=now, ref_type="ledger", ref_id=out.id,
+                                memo=note)
+                ref = dep.id
+            else:
+                if sub is not None:
+                    if ledger.available_cash(s, sub.id, currency) < amount:
+                        raise OmsError("INSUFFICIENT_CASH", f"{sub.name} 이체 가능 {currency} 부족")
+                    out = ledger.post(s, sub.id, currency, "TRANSFER_OUT", -amount, at=now, ref_type="sub",
+                                      ref_id=un.id, memo=note)
+                    ledger.post(s, un.id, currency, "TRANSFER_IN", amount, at=now, ref_type="ledger", ref_id=out.id,
+                                memo=note)
+                if ledger.available_cash(s, un.id, currency) < amount:
+                    raise OmsError("INSUFFICIENT_CASH", f"미배정 {currency} 부족 (출금 {amount})")
+                ref = ledger.post(s, un.id, currency, "WITHDRAW", -amount, at=now, memo=note).id
+            record_event(s, ev, kind, sub.id if sub else un.id, {
+                "broker_account_id": broker_account_id, "currency": currency, "amount": str(amount),
+                "sub_account_id": sub.id if sub else None, "memo": memo, "ledger_id": ref}, now)
+
     def transfer(self, from_id: int, to_id: int, currency: str, amount: Decimal, memo: str = "") -> None:
         self._check_currency(currency)
         amount = q_cash(amount, currency)
