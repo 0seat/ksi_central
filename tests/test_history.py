@@ -211,11 +211,9 @@ async def test_ops_history_job(home: Path, tmp_path: Path) -> None:
 
     clock = Clock(datetime(2026, 10, 14, 16, 15, tzinfo=KST))
     app, _, _, rec = make_app(home, clock)
-    app.settings = app.settings.model_copy(update={"history": app.settings.history.model_copy(
-        update={"symbols": ["KR:005930"], "indices": ["INDEX:KR:0001"]})})
-    app.ops.scheduler.jobs.clear()
-    app.ops._register_jobs()
-    assert "history_kr" in app.ops.scheduler.jobs and "history_us" not in app.ops.scheduler.jobs
+    app.ops.history_targets.cfg = app.settings.history.model_copy(
+        update={"symbols": ["KR:005930", "KR:000660"], "indices": ["INDEX:KR:0001"], "nasdaq100": False})
+    app.ops.history_targets.root = tmp_path
 
     raw = series(date(2026, 9, 1), ["100"] * 30)
     fake = FakeKis(raw, [D(1)] * 30, kr_minutes(date(2026, 10, 14), "0900", 381))
@@ -229,11 +227,110 @@ async def test_ops_history_job(home: Path, tmp_path: Path) -> None:
     fake.index_daily, fake.index_minutes = index_daily, index_minutes   # type: ignore[method-assign]
     store = hmod.HistoryStore(tmp_path)
     app.ops._history_fetcher = lambda: hmod.HistoryFetcher(store, lambda m: fake, clock)   # type: ignore[method-assign]
+    # 보관본이 없는 대상은 일정 작업이 건너뛰고 처음 받기(백그라운드)에 맡긴다
+    started = []
+    app.ops.history_backfill_soon = lambda: started.append(1)   # type: ignore[method-assign]
     result = await app.ops.scheduler.run("history_kr")
-    assert result["ok"], result
+    assert result["ok"] and "처음 받기 대기 3개" in result["detail"] and started
+    assert store.symbols() == []
+
+    del app.ops.history_backfill_soon
+    clock.t = datetime(2026, 10, 14, 10, 0, tzinfo=KST)    # 장중에는 미룬다
+    app.ops.history_backfill_soon()
+    await app.ops._backfill_task
+    assert store.symbols() == []
+    clock.t = datetime(2026, 10, 14, 16, 15, tzinfo=KST)
+    app.ops.history_backfill_soon()
+    await app.ops._backfill_task
     assert len(store.minutes(SeriesKey("KR", "005930"))) == 381
     assert len(store.daily(SeriesKey("KR", "0001", True))) == 30
+    assert "과거 시세 처음 받기 3개 끝" in rec.titles("info")
+    assert {r["symbol"]: r["state"] for r in app.ops.history_status()} == {
+        "INDEX:KR:0001": "ok", "KR:000660": "ok", "KR:005930": "ok"}
+
+    result = await app.ops.scheduler.run("history_kr")     # 이후는 증분
+    assert result["ok"] and result["detail"].startswith("3개 갱신"), result
     await app.http.aclose()
+
+
+# ───────────── 보관 대상 ─────────────
+def test_parse_nasdaq_list_rejects_odd_lists() -> None:
+    from central.marketdata.history_targets import parse_nasdaq_list
+
+    rows = [{"symbol": f"T{i:02d}"} for i in range(101)] + [{"symbol": "bad sym"}]
+    assert len(parse_nasdaq_list({"data": {"data": {"rows": rows}}})) == 101
+    with pytest.raises(ValueError):
+        parse_nasdaq_list({"data": {"data": {"rows": rows[:10]}}})
+    with pytest.raises(ValueError):
+        parse_nasdaq_list({"data": None})
+
+
+async def test_history_targets_merge_and_nasdaq_refresh(tmp_path: Path) -> None:
+    import httpx
+
+    from central.marketdata.history_targets import HistoryTargets
+    from central.settings import HistoryConfig
+    from central.storage.db import Database
+
+    db = Database.memory()
+    db.migrate()
+    t = HistoryTargets(db, tmp_path, HistoryConfig(symbols=["KR:005930"]))
+    bundled, src = t.nasdaq100()
+    assert src == "저장소 기본 목록" and "AAPL" in bundled and len(bundled) > 90
+    assert t.subscribe("kr:005930", "sub:4") and not t.subscribe("KR:005930", "sub:4")
+    assert t.subscribe("INDEX:US:SPX", "admin")
+    with pytest.raises(ValueError):
+        t.subscribe("INDEX:US:A/B", "admin")
+    src = t.sources()
+    assert src["KR:005930"] == ["config", "sub:4"] and src["US:AAPL"] == ["nasdaq100"]
+    assert src["INDEX:US:NDX"] == ["nasdaq100"] and src["INDEX:US:SPX"] == ["admin"]
+    assert "INDEX:US:SPX" in t.indices("US") and "KR:005930" in t.symbols("KR")
+
+    rows = [{"symbol": s} for s in bundled if s != "AAPL"] + [{"symbol": "NEWCO"}]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"data": {"rows": rows}}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        ch = await t.refresh_nasdaq100(http)
+    assert ch["added"] == ["NEWCO"] and ch["removed"] == ["AAPL"]
+    assert t.nasdaq100()[1].startswith("nasdaq.com") and "US:AAPL" not in t.sources()
+
+    assert t.unsubscribe("KR:005930", "sub:9") == 0
+    assert t.unsubscribe("KR:005930", "sub:4") == 1 and t.sources()["KR:005930"] == ["config"]
+    assert t.unsubscribe("INDEX:US:SPX", None) == 1 and "INDEX:US:SPX" not in t.sources()
+
+
+async def test_history_subscription_api(home: Path) -> None:
+    from tests.test_api import Env
+
+    env = Env(home)
+    env.app.instruments.add(SAMSUNG)
+    env.app.ops.history_targets.cfg = env.app.settings.history.model_copy(update={"nasdaq100": False})
+    started = []
+    env.app.ops.history_backfill_soon = lambda: started.append(1)   # type: ignore[method-assign]
+    _, key = await env.new_sub("BOT", ["KR"])
+    h = {"X-API-Key": key}
+    res = (await env.http.post("/market/history-subscriptions", headers=h, json={"symbol": "KR:005930"})).json()
+    assert res["ok"] and res["data"]["created"] and started, res
+    sub_owner = res["data"]["sources"][0]
+    assert sub_owner.startswith("sub:")
+    await env.admin("POST", "/market/history-subscriptions", json={"symbol": "KR:005930"})
+    mine = (await env.http.get("/market/history-subscriptions", headers=h, params={"mine": "true"})).json()["data"]
+    assert [(r["symbol"], r["sources"], r["state"]) for r in mine["subscriptions"]] == [
+        ("KR:005930", [sub_owner, "admin"], "pending")]
+    bad = await env.http.post("/market/history-subscriptions", headers=h, json={"symbol": "KR:999999"})
+    assert bad.status_code == 404
+    bad = await env.http.post("/market/history-subscriptions", headers=h, json={"symbol": "JP:7203"})
+    assert bad.status_code == 400
+    assert (await env.http.post("/market/history-subscriptions", json={"symbol": "KR:005930"})).status_code == 401
+
+    res = (await env.http.delete("/market/history-subscriptions/KR:005930", headers=h)).json()["data"]
+    assert res == {"symbol": "KR:005930", "removed": 1, "still_collected_by": ["admin"]}
+    res = await env.admin("DELETE", "/market/history-subscriptions/KR:005930")
+    assert res["still_collected_by"] == []
+    await env.http.aclose()
+    await env.app.http.aclose()
 
 
 # ───────────── 가져오기 ─────────────

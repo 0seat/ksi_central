@@ -7,6 +7,11 @@
     15:45 KST 국내 개장일 kr_close      주문 동기화, 대사, 일일 보고
     20:10 KST 국내 개장일 kr_expire     동기화 후 남은 미체결 소멸 처리 (NXT 애프터마켓 20:00 종료 뒤)
     16:20 ET  미국 개장일 us_close      주문 동기화, 미체결 소멸, 대사
+    16:10 KST 국내 개장일 history_kr    과거 시세 보관 증분 (대상은 central/marketdata/history_targets.py)
+    17:00 ET  미국 개장일 history_us    과거 시세 보관 증분
+과거 시세 처음 받기 (백그라운드)
+    서버 시작, 앱 등록, 나스닥100 구성 변경 때 아직 보관본이 없는 대상을 끝까지 받는다 (종목당 수 분~15분).
+    그 시장 장중이면 미루고, 장 마감 후 history_kr/history_us 가 다시 부른다
 감시 (30초마다)
     실시간 세션이 ws_down_alert_seconds 넘게 끊기면 알림, 복구되면 알림
     장중에 상시 수집(watchlist) 종목 체결이 stale_tick_minutes 넘게 없으면 알림
@@ -52,6 +57,14 @@ class Operations:
         self._stale: set[str] = set()
         self.started_at: datetime | None = None
         self.last_backup: Path | None = None
+        from central.marketdata.history_cli import history_root
+        from central.marketdata.history_targets import HistoryTargets
+        self.history_targets = HistoryTargets(app.db, history_root(app.settings), app.settings.history,
+                                              clock=app.clock)
+        self._backfill_task: asyncio.Task | None = None
+        self._backfill_again = False
+        self._backfilling: str | None = None
+        self.backfill_errors: dict[str, str] = {}
         self._register_jobs()
         self.scheduler.every("watchdog", 30, self.watch)
         app.bus.subscribe(self.on_event)
@@ -76,19 +89,18 @@ class Operations:
         if self._accounts("US"):
             add(Job("us_close", time(16, 20), self.us_close, tz=NEW_YORK, when=us_day,
                     description="미국 동기화, 미체결 소멸, 대사"))
-        hist = self.app.settings.history
-        if any(k.startswith("KR:") or k.startswith("INDEX:KR:") for k in hist.symbols + hist.indices):
-            add(Job("history_kr", time(16, 10), lambda: self.history("KR"), when=kr_day,
-                    description="국내 과거 시세 보관 (1분봉, 일봉, 기업행위)"))
-        if any(k.startswith("US:") or k.startswith("INDEX:US:") for k in hist.symbols + hist.indices):
-            add(Job("history_us", time(17, 0), lambda: self.history("US"), tz=NEW_YORK, when=us_day,
-                    description="미국 과거 시세 보관 (1분봉, 일봉, 기업행위)"))
-        if hist.indices:
-            self.scheduler.every("history_index", hist.index_minutes_every * 60, self.history_index_minutes)
+        # 과거 시세 보관: 대상은 앱이 API 로 바꿀 수 있어 실행할 때마다 다시 읽는다
+        add(Job("history_kr", time(16, 10), lambda: self.history("KR"), when=kr_day,
+                description="국내 과거 시세 보관 (1분봉, 일봉, 기업행위)"))
+        add(Job("history_us", time(17, 0), lambda: self.history("US"), tz=NEW_YORK, when=us_day,
+                description="미국 과거 시세 보관 (1분봉, 일봉, 기업행위)"))
+        self.scheduler.every("history_index", self.app.settings.history.index_minutes_every * 60,
+                             self.history_index_minutes)
 
     async def start(self) -> None:
         self.started_at = self.app.clock()
         await self.scheduler.start()
+        self.history_backfill_soon()
         acc = ", ".join(f"{a}({p.env}, 거래 {'켬' if p.trading_enabled else '끔'})" for a, p in self.app.profiles.items())
         halted = self.app.halted()
         body = f"계좌: {acc}\n시세 수신: {self.app.market.stats()['sources']}"
@@ -98,6 +110,12 @@ class Operations:
 
     async def stop(self) -> None:
         await self.scheduler.stop()
+        if self._backfill_task and not self._backfill_task.done():
+            self._backfill_task.cancel()
+            try:
+                await self._backfill_task
+            except asyncio.CancelledError:
+                pass
         self.notifier.info("서버 종료", "정상 종료")
 
     # ───────────── 이벤트 알림 ─────────────
@@ -137,37 +155,131 @@ class Operations:
         return HistoryFetcher(HistoryStore(history_root(settings)),
                               lambda m: self.app.brokers[_account(settings, m)], clock=self.app.clock)
 
-    async def history(self, market: str) -> str:
-        """장 마감 후: 종목 1분봉/일봉/기업행위, 지수 일봉/1분봉. 새 기업행위가 생기면 알린다."""
+    def _history_store(self):
+        from central.marketdata.history import HistoryStore
+        return HistoryStore(self.history_targets.root)
+
+    def _needs_backfill(self, key) -> bool:
+        """보관본이 아직 없으면 True (일봉이 없거나, 종목인데 분봉이 없음)."""
+        store = self._history_store()
+        if not (store.root / key.folder / "1d.parquet").exists():
+            return True
+        return not key.index and store.last_minute(key) is None
+
+    async def _history_one(self, fetcher, sym: str) -> tuple[str, list[str]]:
+        """한 대상을 받는다. 종목은 일봉(이벤트)을 먼저: 분봉을 원주가로 되돌리는 데 쓴다. (요약, 새 기업행위)."""
         from central.marketdata.history import SeriesKey
 
-        hist = self.app.settings.history
+        key = SeriesKey.parse(sym)
+        if key.index:
+            d = await fetcher.index_daily(key)
+            m = await fetcher.index_minutes(key)
+            return f"{sym} 분봉 +{m['added']} 일봉 +{d['added']}", []
+        inst = self.app.instruments.get(sym) or self.app.instruments.ensure(sym)
+        before = len(fetcher.store.events(key))
+        d = await fetcher.daily(inst)
+        m = await fetcher.minutes(inst)
+        new = []
+        if before and d["events"] > before:   # 처음 받을 때 찾은 과거 이벤트는 알리지 않는다
+            new = [f"{sym} {e.date} x{e.ratio} ({e.kind})" for e in fetcher.store.events(key)[before:]]
+        return f"{sym} 분봉 +{m['added']} 일봉 +{d['added']}", new
+
+    async def history(self, market: str) -> str:
+        """장 마감 후 증분: 종목 1분봉/일봉/기업행위, 지수 일봉/1분봉. 새 기업행위가 생기면 알린다.
+        보관본이 아직 없는 대상은 백그라운드 처음 받기(history_backfill_soon)가 맡는다."""
+        from central.marketdata.history import SeriesKey
+
+        targets = self.history_targets.symbols(market) + self.history_targets.indices(market)
+        if not targets:
+            return "대상 없음"
         fetcher = self._history_fetcher()
-        failed, new_events, lines = [], [], []
-        for sym in [s for s in hist.symbols if s.startswith(f"{market}:")]:
-            key = SeriesKey.parse(sym)
-            inst = self.app.instruments.get(sym) or self.app.instruments.ensure(sym)
+        failed, new_events, lines, pending = [], [], [], 0
+        for sym in targets:
+            if sym == self._backfilling or self._needs_backfill(SeriesKey.parse(sym)):
+                pending += 1
+                continue
             try:
-                before = len(fetcher.store.events(key))
-                d = await fetcher.daily(inst)      # 이벤트를 먼저: 분봉을 원주가로 되돌리는 데 쓴다
-                m = await fetcher.minutes(inst)
-                lines.append(f"{sym} 분봉 +{m['added']} 일봉 +{d['added']}")
-                if d["events"] > before:
-                    new_events += [f"{sym} {e.date} x{e.ratio} ({e.kind})" for e in fetcher.store.events(key)[before:]]
+                line, new = await self._history_one(fetcher, sym)
+                lines.append(line)
+                new_events += new
             except Exception as e:
                 failed.append(f"{sym}: {type(e).__name__}: {e}")
-        for sym in [s for s in hist.indices if s.startswith(f"INDEX:{market}:")]:
-            try:
-                await fetcher.index_daily(SeriesKey.parse(sym))
-                await fetcher.index_minutes(SeriesKey.parse(sym))
-            except Exception as e:
-                failed.append(f"{sym}: {type(e).__name__}: {e}")
+        if pending:
+            self.history_backfill_soon()
         log.info("과거 시세 보관 %s: %s", market, "; ".join(lines))
         if new_events:
             self.notifier.warning(f"기업행위 감지 ({market})", "\n".join(new_events))
         if failed:
-            raise RuntimeError("과거 시세 보관 일부 실패:\n" + "\n".join(failed))
-        return "\n".join(lines) or "지수만 갱신"
+            raise RuntimeError(f"과거 시세 보관 {len(failed)}/{len(targets)} 실패:\n" + "\n".join(failed))
+        return f"{len(lines)}개 갱신" + (f", 처음 받기 대기 {pending}개" if pending else "")
+
+    def history_backfill_soon(self) -> None:
+        """보관본이 없는 대상을 백그라운드로 처음부터 받는다. 이미 돌고 있으면 끝난 뒤 한 번 더 훑는다."""
+        if self._backfill_task is None or self._backfill_task.done():
+            self._backfill_task = asyncio.create_task(self._history_backfill(), name="history-backfill")
+        else:
+            self._backfill_again = True
+
+    async def _history_backfill(self) -> None:
+        from central.marketdata.history import SeriesKey
+
+        while True:
+            self._backfill_again = False
+            todo = [k for k in self.history_targets.sources() if self._needs_backfill(SeriesKey.parse(k))]
+            done, failed = [], []
+            if todo:
+                log.info("과거 시세 처음 받기 %d개 시작: %s", len(todo), ", ".join(todo))
+                fetcher = self._history_fetcher()
+            deferred = 0
+            for sym in todo:
+                if sym not in self.history_targets.sources():   # 그사이 등록 취소
+                    continue
+                if self._session_open(SeriesKey.parse(sym).market):   # 대량 백필은 장이 닫힌 뒤 (PLAN 7.3)
+                    deferred += 1
+                    continue
+                self._backfilling = sym
+                try:
+                    line, _ = await self._history_one(fetcher, sym)
+                    done.append(sym)
+                    self.backfill_errors.pop(sym, None)
+                    log.info("과거 시세 처음 받기 %s", line)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self.backfill_errors[sym] = f"{type(e).__name__}: {e}"[:300]
+                    failed.append(f"{sym}: {self.backfill_errors[sym]}")
+                    log.warning("과거 시세 처음 받기 실패 %s", failed[-1])
+                finally:
+                    self._backfilling = None
+            if done:
+                self.notifier.info(f"과거 시세 처음 받기 {len(done)}개 끝", ", ".join(done)[:1500])
+            if failed:
+                self.notifier.warning(f"과거 시세 처음 받기 {len(failed)}개 실패", "\n".join(failed)[:1500])
+            if deferred:
+                log.info("과거 시세 처음 받기 %d개는 장 마감 후 일정 작업 때 이어서", deferred)
+            if not self._backfill_again:
+                return
+
+    def _session_open(self, market: str) -> bool:
+        """정규장 앞뒤 여유를 둔 장중 여부. 이때는 처음 받기를 미루고 장 마감 후 일정 작업이 다시 부른다."""
+        now = self.app.clock().astimezone(KST if market == "KR" else NEW_YORK)
+        start, end = (time(8, 30), time(15, 40)) if market == "KR" else (time(9, 0), time(16, 10))
+        return self.app.hours.is_trading_day(market, now.date()) and start <= now.time() <= end
+
+    def history_status(self) -> list[dict]:
+        """대상별 출처와 보관 상태 (API 용). state: ok 보관 중, fetching 처음 받는 중,
+        pending 처음 받기 대기 (장중에 등록하면 그 시장 마감 후)."""
+        from central.marketdata.history import SeriesKey
+
+        store = self._history_store()
+        out = []
+        for sym, sources in self.history_targets.sources().items():
+            key = SeriesKey.parse(sym)
+            state = ("fetching" if sym == self._backfilling else "pending" if self._needs_backfill(key) else "ok")
+            out.append({"symbol": sym, "sources": sources, "state": state,
+                        "last_minute": None if key.index else store.last_minute(key),
+                        "error": self.backfill_errors.get(sym)})
+        return out
 
     async def history_index_minutes(self) -> None:
         """장중 지수 1분봉: KIS 가 최근 약 100개만 주므로 주기적으로 받아 쌓는다."""
@@ -175,8 +287,10 @@ class Operations:
 
         now = self.app.clock()
         fetcher = None
-        for sym in self.app.settings.history.indices:
+        for sym in self.history_targets.indices():
             key = SeriesKey.parse(sym)
+            if self._needs_backfill(key):   # 일봉부터 받는 처음 받기에 맡긴다
+                continue
             local = now.astimezone(key.zone)
             hours = (time(9, 0), time(15, 45)) if key.market == "KR" else (time(9, 30), time(16, 5))
             if not (self.app.hours.is_trading_day(key.market, local.date()) and hours[0] <= local.time() <= hours[1]):
@@ -295,6 +409,16 @@ class Operations:
         parts = [f"휴장일 {n}일 갱신" if n else "휴장일 오늘 이미 받음"]
         if app.clock().weekday() < 5 or not app.catalog.has_master():
             parts.append(f"종목 마스터 {await app.refresh_master()}")
+        if app.settings.history.nasdaq100:
+            try:
+                ch = await self.history_targets.refresh_nasdaq100(app.http)
+                parts.append(f"나스닥100 {ch['count']}종목")
+                if ch["added"] or ch["removed"]:
+                    parts.append(f"편입 {ch['added']} 편출 {ch['removed']}")
+                    self.notifier.info("나스닥100 구성 변경", f"편입 {ch['added']}\n편출 {ch['removed']} (보관본은 남김)")
+                    self.history_backfill_soon()
+            except Exception as e:   # 실패하면 지난 목록을 계속 쓴다
+                parts.append(f"나스닥100 갱신 실패 {type(e).__name__}: {e}")
         return ", ".join(parts)
 
     async def kr_preopen(self) -> str:

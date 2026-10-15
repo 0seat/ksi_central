@@ -252,3 +252,11 @@ class EventRow(Base):
     type: Mapped[str] = mapped_column(String(32))
     sub_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
+class HistorySubscriptionRow(Base):
+    """앱이 API 로 등록한 과거 시세 보관 대상 (central/marketdata/history_targets.py). owner: sub:<id> 또는 admin."""
+    __tablename__ = "history_subscriptions"
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(32), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)

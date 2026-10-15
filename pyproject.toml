@@ -32,6 +32,7 @@ include = ["central*"]
 
 [tool.setuptools.package-data]
 "central.storage" = ["migrations/*.py", "migrations/*.mako", "migrations/versions/*.py"]
+"central.marketdata" = ["nasdaq100.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -12,6 +12,7 @@ import hmac
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Request
+from pydantic import BaseModel
 
 from central.api.common import ApiError, App, ok
 from central.broker.base import BrokerUnavailable
@@ -159,6 +160,78 @@ def history(app: App, symbol: str, interval: Literal["1m", "1d"] = "1d",
                "events": [e.to_json() for e in store.events(key)] if not key.index else [],
                "candles": [{"ts": b.ts, "open": b.open, "high": b.high, "low": b.low, "close": b.close,
                             "volume": b.volume} for b in bars]})
+
+
+# ───────────── 과거 시세 보관 대상 등록 ─────────────
+def _owner(request: Request, x_api_key: Annotated[str | None, Header()] = None,
+           x_admin_key: Annotated[str | None, Header()] = None) -> str:
+    """등록 주인: 앱 키면 sub:<서브계좌 id>, 관리자 키면 admin."""
+    app = request.app.state.central
+    admin = app.settings.admin_key
+    if x_admin_key and admin and hmac.compare_digest(x_admin_key.encode(), admin.get_secret_value().encode()):
+        return "admin"
+    sub = app.apikeys.authenticate(x_api_key)
+    if sub is None:
+        raise ApiError("UNAUTHORIZED", "API 키가 없거나 올바르지 않음")
+    return f"sub:{sub.id}"
+
+
+Owner = Annotated[str, Depends(_owner)]
+
+
+class _Subscribe(BaseModel):
+    model_config = {"extra": "forbid"}
+    symbol: str
+
+
+def _target_key(app, symbol: str) -> str:
+    from central.marketdata.history import SeriesKey
+
+    try:
+        key = str(SeriesKey.parse(symbol))
+    except ValueError as e:
+        raise OmsError("INVALID_REQUEST", str(e)) from None
+    if not key.startswith("INDEX:") and app.instruments.get(key) is None:
+        raise OmsError("NOT_FOUND", f"종목 마스터에 없음: {key}")
+    return key
+
+
+@router.get("/history-subscriptions")
+def history_subscriptions(app: App, owner: Owner, mine: bool = False):
+    """매일 보관하는 대상 전체와 출처(config, nasdaq100, sub:<id>, admin), 상태(ok, fetching, pending).
+    mine=true 면 내가 등록한 것만."""
+    rows = app.ops.history_status()
+    if mine:
+        rows = [r for r in rows if owner in r["sources"]]
+    return ok({"owner": owner, "subscriptions": rows})
+
+
+@router.post("/history-subscriptions")
+def history_subscribe(app: App, owner: Owner, body: _Subscribe):
+    """보관 대상으로 등록. 보관본이 없으면 서버가 백그라운드로 KIS 가 주는 끝까지 받는다
+    (국내 1분봉 1년치 종목당 약 15분, 미국 1분봉 1개월치 약 4분). 이후 장 마감 뒤 매일 이어 받는다."""
+    key = _target_key(app, body.symbol)
+    try:
+        created = app.ops.history_targets.subscribe(key, owner)
+    except ValueError as e:
+        raise OmsError("INVALID_REQUEST", str(e)) from None
+    app.ops.history_backfill_soon()
+    return ok({"symbol": key, "created": created, "sources": app.ops.history_targets.sources().get(key, [])})
+
+
+@router.delete("/history-subscriptions/{symbol:path}")
+def history_unsubscribe(app: App, owner: Owner, symbol: str):
+    """내 등록을 취소 (관리자는 그 대상의 앱 등록 전부). 보관본은 지우지 않는다.
+    다른 앱이나 설정(config, nasdaq100)이 남아 있으면 수집은 계속된다 (still_collected_by)."""
+    from central.marketdata.history import SeriesKey
+
+    try:
+        key = str(SeriesKey.parse(symbol))
+    except ValueError as e:
+        raise OmsError("INVALID_REQUEST", str(e)) from None
+    removed = app.ops.history_targets.unsubscribe(key, None if owner == "admin" else owner)
+    return ok({"symbol": key, "removed": removed,
+               "still_collected_by": app.ops.history_targets.sources().get(key, [])})
 
 
 @router.get("/status")

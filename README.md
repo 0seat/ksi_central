@@ -59,8 +59,13 @@ KIS 는 1분봉을 국내 약 1년, 미국 약 1개월만 보관하고 지수 1�
   - `none` 원주가, `split` 분할/병합 등 자본변동만, `total` 배당까지 (국내 수정주가는 배당을 반영하지 않아 split 과 같음)
 - 조회: `/market/history/{symbol}?interval=1m|1d&adjust=...` (SDK: `history`). symbol 예: `KR:005930`, `US:AAPL`,
   `INDEX:KR:0001`(코스피), `INDEX:KR:1001`(코스닥), `INDEX:US:COMP`(나스닥 종합), `INDEX:US:SPX`(S&P500)
-- 처음 받기: `python -m central history fetch KR:005930 US:AAPL INDEX:KR:0001` 또는 `--top-kr 10 --top-us 10`
-  (국내 1년치 1분봉은 종목당 약 15분). 이후 `central.toml` 의 `[history]` 목록은 장 마감 후 자동 갱신됩니다.
+- 대상: `central.toml` 의 `[history]` 목록, 나스닥100 구성종목(기본 켬, 구성은 nasdaq.com 에서 매일 갱신),
+  앱이 API 로 등록한 종목/지수. 처음 보는 대상은 서버가 백그라운드로 끝까지 받고(그 시장 장중이면 마감 후),
+  이후 장 마감 후 매일 이어 받습니다. 국내 1년치 1분봉은 종목당 약 15분, 미국 1개월치는 약 4분.
+  - 등록 `POST /market/history-subscriptions {"symbol": "KR:005930"}`, 취소 `DELETE /market/history-subscriptions/KR:005930`,
+    목록과 상태 `GET /market/history-subscriptions?mine=true` (SDK: `history_subscribe`, `history_unsubscribe`,
+    `history_subscriptions`). 취소해도 보관본은 남고, 다른 앱이나 설정이 등록했으면 수집은 계속됩니다.
+- 수동 받기: `python -m central history fetch KR:005930 US:AAPL INDEX:KR:0001` 또는 `--top-kr 10 --top-us 10`
 - 확인: `python -m central history list`, `history events US:AAPL`, `history show US:AAPL --adjust split`
 
 ## 서버 실행

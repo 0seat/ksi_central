@@ -95,6 +95,9 @@ avg_fill_price, status, reject_reason, orig_order_id, broker_order_no, created_a
 | `orderbook(symbol)` | `GET /market/orderbook/{symbol}` | `asks`, `bids`: `[[가격, 수량], ...]` 가까운 호가부터 10단계 (미국은 1단계) |
 | `candles(symbol, interval="1d", start=, end=, limit=500)` | `GET /market/candles/{symbol}` | interval: `1m 5m 15m 30m 60m 1d 1w 1M`. `candles: [{ts, open, high, low, close, volume}]` 오래된 것부터, ts 는 봉 시작 시각. 분봉은 정규장만. start 생략 시 분봉은 하루 전부터, `truncated` 면 기간을 줄일 것 |
 | `history(symbol, interval="1d", adjust="none", start=, end=, limit=5000)` | `GET /market/history/{symbol}` | 보관소 조회 (KIS 에서 만료된 과거 분봉 포함, 보관 중인 종목만). interval: `1m 1d`. adjust: `none` 원주가, `split` 분할/병합만, `total` 배당까지. symbol 에 지수 가능 (`INDEX:KR:0001` 코스피, `INDEX:US:COMP` 나스닥 종합). `events: [{date, ratio, kind}]` 은 기업행위 (date 이전 가격 x ratio) |
+| `history_subscribe(symbol)` | `POST /market/history-subscriptions` | 보관 대상 등록 (종목 또는 지수). 보관본이 없으면 서버가 백그라운드로 처음부터 받고(그 시장 장중이면 마감 후) 이후 매일 이어 받는다. `{symbol, created, sources}` |
+| `history_unsubscribe(symbol)` | `DELETE /market/history-subscriptions/{symbol}` | 내 등록 취소 (관리자 키는 그 대상의 앱 등록 전부). 보관본은 남는다. `{symbol, removed, still_collected_by}`: 다른 앱이나 `config`, `nasdaq100` 이 남아 있으면 수집 계속 |
+| `history_subscriptions(mine=False)` | `GET /market/history-subscriptions` | 보관 대상 전체 `[{symbol, sources, state, last_minute, error}]`. sources: `config`(central.toml), `nasdaq100`, `sub:<id>`(앱), `admin`. state: `ok`, `fetching`(처음 받는 중), `pending`(대기) |
 | `ticks(symbol, day=None, limit=10000)` | `GET /market/ticks/{symbol}` | 저장된 틱 (상시 수집 종목이나 누군가 구독 중일 때만 쌓임) |
 | `calendar(market="KR", start=, end=)` | `GET /market/calendar` | `days: [{date, open, source, early_close_et?}]` |
 | `market_status(market=None)` | `GET /market/status` | 시장별 `{accepting_orders, reason}` |

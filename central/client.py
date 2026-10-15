@@ -143,6 +143,18 @@ class CentralClient:
         return await self._req("GET", f"/market/history/{symbol}", params=_dates(
             {"interval": interval, "adjust": adjust, "limit": limit, "start": start, "end": end}))
 
+    async def history_subscriptions(self, mine: bool = False) -> dict:
+        """매일 보관하는 대상과 출처, 상태. mine=True 면 이 앱이 등록한 것만."""
+        return await self._req("GET", "/market/history-subscriptions", params={"mine": str(mine).lower()})
+
+    async def history_subscribe(self, symbol: str) -> dict:
+        """보관 대상 등록. 보관본이 없으면 서버가 백그라운드로 처음부터 받고, 이후 매일 이어 받는다."""
+        return await self._req("POST", "/market/history-subscriptions", json={"symbol": symbol})
+
+    async def history_unsubscribe(self, symbol: str) -> dict:
+        """등록 취소. 보관본은 남는다. 다른 앱이나 설정이 등록했으면 수집은 계속된다."""
+        return await self._req("DELETE", f"/market/history-subscriptions/{symbol}")
+
     async def orderbook(self, symbol: str) -> dict:
         return await self._req("GET", f"/market/orderbook/{symbol}")
 

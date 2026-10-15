@@ -163,10 +163,11 @@ class OpsConfig(_Model):
 
 
 class HistoryConfig(_Model):
-    """과거 시세 보관 (central/marketdata/history.py). 목록이 비어 있으면 일정 작업이 돌지 않는다.
-    처음 넣은 종목은 python -m central history fetch 로 먼저 끝까지 받아 둘 것 (국내 1년치 종목당 약 15분)."""
+    """과거 시세 보관 (central/marketdata/history.py). 대상은 여기 목록 + 나스닥100 + 앱이 API 로 등록한 것
+    (central/marketdata/history_targets.py). 처음 보는 대상은 서버가 백그라운드로 끝까지 받는다."""
     symbols: list[str] = Field(default_factory=list)   # KR:005930, US:AAPL
     indices: list[str] = Field(default_factory=list)   # INDEX:KR:0001, INDEX:US:COMP
+    nasdaq100: bool = True    # 나스닥100 구성종목과 INDEX:US:NDX 를 기본으로 (KIS 미국 1분봉은 약 1개월만 남음)
     index_minutes_every: int = Field(default=60, ge=10, le=100)   # 장중 지수 1분봉 수집 주기(분). KIS 는 최근 약 100개만 줌
 
     @field_validator("symbols", "indices")
