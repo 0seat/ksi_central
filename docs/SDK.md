@@ -9,7 +9,7 @@
 - 서버 코드 위치: `central/api/me.py`, `central/api/market.py`, `central/api/ws.py`, SDK 는 `sdk/central_client.py`
 - 프로그램은 저장소 밖 아무 폴더, 아무 언어여도 됩니다. HTTP 로 `X-API-Key` 헤더만 붙이면 됩니다.
   파이썬이면 SDK 를 쓰는 편이 편합니다. SDK 는 HTTP 호출을 감싼 라이브러리일 뿐 서버를 띄우지 않으며,
-  서버 코드 없이 따로 설치됩니다: `pip install E:_project_tick_trading\sdk` (의존성 httpx, websockets 뿐).
+  서버 코드 없이 따로 설치됩니다: `pip install <저장소 폴더>/sdk` (의존성 httpx, websockets 뿐).
   또는 `sdk/central_client.py` 파일 하나를 복사해도 됩니다.
 
 ---
@@ -54,6 +54,18 @@ asyncio.run(main())
 ```
 
 SDK 오류는 모두 `CentralError(code, message, status)` 로 올라옵니다.
+
+SDK 없이 HTTP 로 직접 부를 때 (다른 언어, curl). 4절 표의 두 번째 열이 각 메서드의 HTTP 경로입니다.
+
+```powershell
+$h = @{ "X-API-Key" = $env:CENTRAL_API_KEY }
+Invoke-RestMethod http://127.0.0.1:8700/api/v1/me/balance -Headers $h
+Invoke-RestMethod http://127.0.0.1:8700/api/v1/me/orders -Method Post -Headers $h -ContentType application/json `
+    -Body '{"client_order_id":"demo-002","symbol":"KR:005930","side":"buy","qty":1,"price":"61000"}'
+```
+
+다른 PC 에서 붙으려면 서버 `central.toml` 의 `[server] hosts` 에 서버의 Tailscale IP 가 있어야 하고,
+키 파일의 `base_url` 을 `http://<Tailscale IP>:8700` 으로 씁니다. 기본값 `127.0.0.1` 만으로는 같은 PC 에서만 접속됩니다.
 
 ---
 
