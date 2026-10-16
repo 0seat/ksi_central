@@ -167,6 +167,15 @@ class CentralClient:
         return await self._req("GET", f"/market/history/{symbol}", params=_dates(
             {"interval": interval, "adjust": adjust, "limit": limit, "start": start, "end": end}))
 
+    async def rankings(self, kind: str, *, limit: int = 100, **filters) -> dict:
+        """KIS 순위. kind: kr_volume, kr_fluctuation, kr_volume_power, us_volume_surge, us_price_fluct.
+        filters 예: sort="volume_growth", universe="kosdaq", exclude=["etf", "etn", "spac"], min_volume=100000,
+        min_price="1000", exchange="NAS", minutes=5. 결과 {kind, market, query, ts, cached, rows}."""
+        if isinstance(filters.get("exclude"), (list, tuple, set)):
+            filters["exclude"] = ",".join(filters["exclude"])
+        params = {k: str(v) if not isinstance(v, (int, str)) else v for k, v in filters.items()}
+        return await self._req("GET", f"/market/rankings/{kind}", params={**params, "limit": limit})
+
     async def history_subscriptions(self, mine: bool = False) -> dict:
         """매일 보관하는 대상과 출처, 상태. mine=True 면 이 앱이 등록한 것만."""
         return await self._req("GET", "/market/history-subscriptions", params={"mine": str(mine).lower()})

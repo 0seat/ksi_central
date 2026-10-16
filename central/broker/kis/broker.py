@@ -383,6 +383,16 @@ class KisBroker(Broker):
             raise BrokerUnavailable(f"휴장일 조회 실패: {e}") from None
         return out
 
+    async def ranking(self, query) -> list[dict]:
+        from central.broker.kis import ranking
+
+        trx, params, key = ranking.request(query)
+        try:
+            body = (await self.rest.request(trx, params)).body
+        except (KisApiError, httpx.HTTPError) as e:
+            raise BrokerUnavailable(f"순위 조회 실패: {e}") from None
+        return ranking.rows(query, _rows(body, key))
+
     async def orderbook(self, instrument: Instrument) -> OrderBook:
         try:
             if instrument.market == "KR":

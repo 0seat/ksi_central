@@ -20,6 +20,7 @@ from central.core.instruments import InstrumentRegistry
 from central.core.market_hours import MarketHours, now_kst
 from central.marketdata.calendar import CalendarService
 from central.marketdata.candles import CandleService
+from central.marketdata.rankings import RankingService
 from central.marketdata.master import fetch_master
 from central.marketdata.hub import MarketDataHub, RealtimeSource
 from central.marketdata.ticks import TickStore
@@ -93,6 +94,7 @@ class CentralApp:
             self.ticks = TickStore(settings.ticks_dir, flush_seconds=settings.market_data.flush_seconds, clock=clock)
             self.market.listeners.append(self.ticks.on_market)
         self.candles = CandleService(self.db, self.data_broker, clock)
+        self.rankings = RankingService(self.data_broker, clock)
         self.price_limits: dict[tuple, tuple] = {}   # (종목, 날짜) → (상한가, 하한가) 현재가 응답용 캐시
         self.calendar = CalendarService(self.db, self.hours, self._kr_calendar_broker, clock)
         self.calendar.apply()

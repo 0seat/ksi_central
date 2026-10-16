@@ -510,6 +510,7 @@ KIS 보관 깊이 실측 (2026-10-14/15):
 | GET | `/market/calendar?market=&from&to` | 영업일 |
 | GET | `/market/status?market=` | 장 상태 |
 | GET | `/market/fx?pair=USDKRW` | 환율 |
+| GET | `/market/rankings/{kind}` | KIS 순위: kr_volume, kr_fluctuation, kr_volume_power, us_volume_surge, us_price_fluct (같은 조건 10초 캐시 공유) |
 
 ### 8.5 실시간 WebSocket (`/ws`)
 ```json

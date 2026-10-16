@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hmac
+from decimal import Decimal
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Request
@@ -232,6 +233,35 @@ def history_unsubscribe(app: App, owner: Owner, symbol: str):
     removed = app.ops.history_targets.unsubscribe(key, None if owner == "admin" else owner)
     return ok({"symbol": key, "removed": removed,
                "still_collected_by": app.ops.history_targets.sources().get(key, [])})
+
+
+@router.get("/rankings/{kind}")
+async def rankings(app: App, kind: str, sort: str | None = None, universe: str = "all", stock_type: str = "all",
+                   exclude: str | None = None, min_price: Decimal | None = None, max_price: Decimal | None = None,
+                   min_volume: int | None = None, min_rate: Decimal | None = None, max_rate: Decimal | None = None,
+                   exchange: str = "NAS", minutes: int = 5, limit: int = Query(default=100, ge=1, le=100)):
+    """KIS 순위. 같은 조건은 10초 동안 서버 캐시를 같이 쓴다 (cached=true). 국내 최대 30행, 미국 100행.
+
+    kind:
+    - kr_volume: 거래량 순위. sort=volume(기본)|volume_growth(전일 대비 증가율)|volume_turnover|value|value_turnover
+    - kr_fluctuation: 등락률 순위 (전일 종가 기준). sort=up(기본)|down|open_up|open_down(시가 대비)|range(고저 폭).
+      min_rate, max_rate 로 등락률 구간 (%)
+    - kr_volume_power: 체결강도 순위
+    - us_volume_surge: minutes 분 전 대비 거래량 급증. exchange=NAS|NYS|AMS, minutes=1,2,3,5,10,15,20,30,60,120
+    - us_price_fluct: minutes 분 전 대비 가격 급등(sort=up, 기본)|급락(down)
+    국내 공통: universe=all|kospi|kosdaq|kospi200, stock_type=all|common|preferred (kr_fluctuation 제외),
+    exclude=쉼표 목록 (caution 투자위험/경고/주의, managed 관리, liquidation 정리매매, unfaithful 불성실공시,
+    preferred 우선주, halted 거래정지, etf, etn, no_credit 신용주문불가, spac), min_price, max_price, min_volume.
+    미국 min_volume 은 KIS 단계값(100, 1천, 1만, 10만, 100만, 1000만)으로 내려 조회한 뒤 행을 거른다.
+    """
+    from central.marketdata.rankings import build_query
+
+    q = build_query(kind, sort=sort, universe=universe, stock_type=stock_type, exclude=exclude,
+                    min_price=min_price, max_price=max_price, min_volume=min_volume, min_rate=min_rate,
+                    max_rate=max_rate, exchange=exchange, minutes=minutes)
+    rows, ts, cached = await app.rankings.get(q)
+    return ok({"kind": kind, "market": q.market, "query": q.to_json(), "ts": ts, "cached": cached,
+               "rows": rows[:limit]})
 
 
 @router.get("/status")

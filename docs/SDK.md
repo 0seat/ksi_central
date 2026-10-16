@@ -116,11 +116,28 @@ avg_fill_price, status, reject_reason, orig_order_id, broker_order_no, created_a
 | `history_subscribe(symbol)` | `POST /market/history-subscriptions` | 보관 대상 등록 (종목 또는 지수). 보관본이 없으면 서버가 백그라운드로 처음부터 받고(그 시장 장중이면 마감 후) 이후 매일 이어 받는다. `{symbol, created, sources}` |
 | `history_unsubscribe(symbol)` | `DELETE /market/history-subscriptions/{symbol}` | 내 등록 취소 (관리자 키는 그 대상의 앱 등록 전부). 보관본은 남는다. `{symbol, removed, still_collected_by}`: 다른 앱이나 `config`, `nasdaq100` 이 남아 있으면 수집 계속 |
 | `history_subscriptions(mine=False)` | `GET /market/history-subscriptions` | 보관 대상 전체 `[{symbol, sources, state, last_minute, error}]`. sources: `config`(central.toml), `nasdaq100`, `sub:<id>`(앱), `admin`. state: `ok`, `fetching`(처음 받는 중), `pending`(대기) |
+| `rankings(kind, limit=100, **filters)` | `GET /market/rankings/{kind}` | KIS 순위. 같은 조건은 서버가 10초 캐시를 같이 쓴다(`cached`). kind: `kr_volume`(sort: `volume` `volume_growth` `volume_turnover` `value` `value_turnover`), `kr_fluctuation`(sort: `up` `down` `open_up` `open_down` `range`, `min_rate` `max_rate` %), `kr_volume_power`(체결강도), `us_volume_surge`(`minutes` 분 전 대비 거래량 급증), `us_price_fluct`(sort `up` `down`, `minutes` 분 전 대비). 국내 필터: `universe`(`all` `kospi` `kosdaq` `kospi200`), `stock_type`(`all` `common` `preferred`), `exclude`(목록: `caution` `managed` `liquidation` `unfaithful` `preferred` `halted` `etf` `etn` `no_credit` `spac`), `min_price` `max_price` `min_volume`. 미국: `exchange`(`NAS` `NYS` `AMS`), `minutes`(1 2 3 5 10 15 20 30 60 120), `min_volume`. 행 공통 `rank, symbol, name, last, change, change_rate, volume` + 종류별 필드(아래). 국내 최대 30행, 미국 100행 |
 | `ticks(symbol, day=None, limit=10000)` | `GET /market/ticks/{symbol}` | 저장된 틱 (상시 수집 종목이나 누군가 구독 중일 때만 쌓임) |
 | `calendar(market="KR", start=, end=)` | `GET /market/calendar` | `days: [{date, open, source, early_close_et?}]` |
 | `market_status(market=None)` | `GET /market/status` | 시장별 `{accepting_orders, reason}` |
 | `symbols(q="", market=None, limit=50)` | `GET /market/symbols` | 이름/코드 검색. `[{id, market, code, exchange, name, name_en, kind, nxt_tradable}]` |
 | `fx()` | `GET /market/fx` | USDKRW 환율 |
+
+순위 행의 종류별 필드 (`rankings`)
+
+| kind | 추가 필드 |
+|---|---|
+| `kr_volume` | `prev_volume, avg_volume, volume_growth_rate`(전일 대비 %), `volume_turnover, value`(거래대금), `avg_value, value_turnover, listed_shares` |
+| `kr_fluctuation` | `high, high_time, low, low_time, up_days, down_days`(연속 상승/하락 일수), `open_change_rate`(sort `open_up/open_down` 일 때만 값), `range_rate`(sort `range` 일 때만 값) |
+| `kr_volume_power` | `strength`(당일 체결강도, 상한 999.99), `buy_volume, sell_volume` |
+| `us_volume_surge` | `name_en, exchange, bid, ask, base_volume`(N분 전 거래량), `volume_increase, volume_increase_rate` |
+| `us_price_fluct` | `name_en, exchange, bid, ask, base_price`(N분 전 가격), `base_change, base_change_rate` |
+
+순위 사용 시 참고
+- 순위는 KIS 가 계산한 그대로다. 국내 `kr_fluctuation` sort `down` 처럼 KIS 정렬이 완전히 단조롭지 않은 경우가 있다.
+- 순위에는 종목 마스터에 없는 종목(예: `KR:Q` 로 시작하는 ETN)이 섞일 수 있다. 주문 전에 `symbols()` 로 확인할 것.
+- 스팩(SPAC)과 우선주가 거래증가율, 체결강도 상위를 자주 차지한다. 보통 `exclude=["spac","etf","etn"]`, `stock_type="common"` 을 같이 쓴다.
+- 국내는 KRX 기준(통합/NXT 순위 아님). 미국 `min_volume` 은 KIS 단계값으로 조회한 뒤 서버가 행을 거른다.
 
 ---
 

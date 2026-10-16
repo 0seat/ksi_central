@@ -69,6 +69,12 @@ OVERSEAS_INDEX_MINUTE = _same(f"{_OP}/quotations/inquire-time-indexchartprice", 
 # 시가총액 순위 (해외는 공식 예제에 없는 CURR_GB 가 필수, 2026-10-15 실측)
 KR_MARKET_CAP = _same(f"{_DS}/ranking/market-cap", "FHPST01740000")
 US_MARKET_CAP = _same(f"{_OS}/ranking/market-cap", "HHDFS76350100")
+# 순위 (2026-10-17 실측: 모의/실전 모두 지원. 국내 30건, 미국 100건)
+KR_VOLUME_RANK = _same(f"{_DS}/quotations/volume-rank", "FHPST01710000")
+KR_FLUCTUATION = _same(f"{_DS}/ranking/fluctuation", "FHPST01700000")
+KR_VOLUME_POWER = _same(f"{_DS}/ranking/volume-power", "FHPST01680000")
+US_VOLUME_SURGE = _same(f"{_OS}/ranking/volume-surge", "HHDFS76270000")
+US_PRICE_FLUCT = _same(f"{_OS}/ranking/price-fluct", "HHDFS76260000")
 
 # 기간별계좌권리현황조회 [국내주식-211] (HTS 7344). 모의 미지원. INQR_DVSN 은 공식 예제의 "03"
 KR_PERIOD_RIGHTS = Tr(f"{_DS}/trading/period-rights", "GET", "CTRGA011R", None)

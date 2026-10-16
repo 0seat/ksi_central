@@ -196,6 +196,10 @@ class Broker(ABC):
     async def orderbook(self, instrument: Instrument) -> OrderBook:
         raise BrokerUnavailable(f"{type(self).__name__}: 호가 조회 미지원")
 
+    async def ranking(self, query) -> list[dict]:
+        """순위 한 페이지 (central/marketdata/rankings.py 의 RankingQuery → 공통 행 목록)."""
+        raise BrokerUnavailable(f"{type(self).__name__}: 순위 조회 미지원")
+
     async def market_days(self, start: date, pages: int = 3) -> list[tuple[date, bool]]:
         """국내 개장일 목록 (날짜, 개장 여부)."""
         raise BrokerUnavailable(f"{type(self).__name__}: 개장일 조회 미지원")
