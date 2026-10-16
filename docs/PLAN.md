@@ -597,7 +597,7 @@ async for tick in cs.stream("tick:US:AAPL"): ...
 
 ### 11.3 디렉토리 분리
 ```
-E:\01_project\26_tick_trading\        ← git 저장소 (public 가능)
+E:\01_project\26_ksi_central\        ← git 저장소 (public 가능)
   config\central.example.toml        ← 예시만 커밋
   config\secrets.example.toml        ← 키 이름만 있고 값은 비어 있음
 
@@ -643,7 +643,7 @@ E:\01_project\26_tick_trading\        ← git 저장소 (public 가능)
 
 ## 12. 디렉토리 구조 (저장소)
 ```
-26_tick_trading/
+26_ksi_central/
 ├── docs/
 ├── config/                  # *.example.toml만
 ├── central/
