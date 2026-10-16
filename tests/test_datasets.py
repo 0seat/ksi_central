@@ -35,7 +35,7 @@ def q(group: str, kind: str, **raw: str):
 def test_build_query_validates() -> None:
     a = q("rankings", "kr_volume", universe="kosdaq", exclude="etf, etn,spac")
     assert a.get("sort") == "volume" and a.get("exclude") == ("etf", "etn", "spac") and a.market == "KR"
-    assert q("flows", "investor_daily", symbol="kr:005930").get("date") == TODAY      # date 기본은 오늘
+    assert q("flows", "investor_daily", symbol="kr:005930").get("date") is None       # 생략하면 KIS 최근 기준
     assert q("flows", "short_sale_daily", symbol="KR:005930", start="20260901").get("start") == date(2026, 9, 1)
     assert q("rankings", "us_updown", days="5").get("days") == 5
     for group, kind, raw in [("rankings", "nope", {}), ("rankings", "kr_volume", {"sort": "up"}),
@@ -46,7 +46,8 @@ def test_build_query_validates() -> None:
                              ("rankings", "kr_fluctuation", {"stock_type": "common"}),
                              ("rankings", "kr_volume", {"min_volume": "-1"}),
                              ("flows", "investor_daily", {}), ("flows", "investor_daily", {"symbol": "US:AAPL"}),
-                             ("flows", "short_sale_daily", {"symbol": "KR:005930", "start": "2026-13-01"})]:
+                             ("flows", "short_sale_daily", {"symbol": "KR:005930", "start": "2026-13-01"}),
+                             ("flows", "investor_daily", {"symbol": "KR:005930", "date": "2026-10-17"})]:
         with pytest.raises(OmsError) as e:
             q(group, kind, **raw)
         assert e.value.code == "INVALID_REQUEST", (kind, raw)
@@ -87,7 +88,9 @@ def test_kis_params() -> None:
     assert p["NDAY"] == "9"
 
     _, p, key = kis.request(q("flows", "investor_daily", symbol="KR:005930"))
-    assert p["FID_INPUT_ISCD"] == "005930" and p["FID_INPUT_DATE_1"] == "20261016" and key == "output2"
+    assert p["FID_INPUT_ISCD"] == "005930" and p["FID_INPUT_DATE_1"] == "" and key == "output2"
+    _, p, _ = kis.request(q("flows", "investor_daily", symbol="KR:005930", date="2026-10-15"))
+    assert p["FID_INPUT_DATE_1"] == "20261015"
     _, p, _ = kis.request(q("flows", "market_investor_daily", market="kosdaq"))
     assert (p["FID_INPUT_ISCD"], p["FID_INPUT_ISCD_1"]) == ("1001", "KSQ")
 
@@ -144,8 +147,8 @@ async def test_api_cache_and_filter(env: Env) -> None:
         kinds = await cs.rankings()
         assert {k["kind"] for k in kinds} >= {"kr_volume", "us_volume_surge", "kr_investor_net"}
         assert any(k["kind"] == "investor_daily" for k in await cs.flows())
-        f = await cs.flows("investor_daily", symbol="KR:005930", date=date(2026, 10, 16))
-        assert f["query"] == {"symbol": "KR:005930", "date": "2026-10-16"} and len(f["rows"]) == 1
+        f = await cs.flows("investor_daily", symbol="KR:005930", date=date(2026, 10, 13))
+        assert f["query"] == {"symbol": "KR:005930", "date": "2026-10-13"} and len(f["rows"]) == 1
 
         dq = env.app.datasets.query("rankings", "kr_volume", {"sort": "value"})   # 동시 요청은 한 번만
         got = await asyncio.gather(*(env.app.datasets.get(dq) for _ in range(3)))  # (메모리 DB 는 동시 인증 불가)

@@ -174,7 +174,7 @@ await cs.flows("market_program", market="kosdaq")
 
 | kind | 조건 | 행 |
 |---|---|---|
-| `investor_daily` | `symbol`, `date`(기본 오늘, 그날까지 30일) | `date, close, change, change_rate, volume, value, open, high, low, investors` |
+| `investor_daily` | `symbol`, `date`(생략하면 최근, 그날까지 30일) | `date, close, change, change_rate, volume, value, open, high, low, investors` |
 | `investor_estimate` | `symbol` | 장중 추정 순매수 `slot`(KIS 입력구분 1~5, 시각 대응은 공식 문서에 없음), `foreign_net_qty, institution_net_qty, total_net_qty` |
 | `program` | `symbol` | 장중 프로그램 매매 최근 30건 `time, last, volume, sell_qty, buy_qty, net_qty, sell_value, buy_value, net_value`(원) |
 | `program_daily` | `symbol`, `date` | 일별 프로그램 매매 (원) |
@@ -198,6 +198,7 @@ await cs.flows("market_program", market="kosdaq")
 - 순위에는 종목 마스터에 없는 종목(예: `KR:Q` 로 시작하는 ETN)이 섞일 수 있다. 주문 전에 `symbols()` 로 확인할 것.
 - 스팩과 우선주가 거래증가율, 체결강도 상위를 자주 차지한다. 보통 `exclude=["spac","etf","etn"]`, `stock_type="common"` 을 같이 쓴다.
 - 국내는 KRX 기준(통합/NXT 아님). 장중 값(가집계, 추정)은 확정치가 아니다.
+- 날짜 조건(`date`, `start`, `end`)은 생략하면 KIS 가 최근 거래일 기준으로 준다. 미래 날짜는 거부한다.
 
 ---
 

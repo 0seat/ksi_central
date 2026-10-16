@@ -135,7 +135,7 @@ SPECS: dict[tuple[str, str], Spec] = {(s.group, s.kind): s for s in [
     Spec(_R, "us_volume_power", "US", "매수체결강도 상위", (*US_BASE, DAYS)),
     Spec(_R, "us_market_cap", "US", "시가총액 상위", US_BASE, (("market_cap", "USD"),)),
     # ───────────── 국내 수급 (종목) ─────────────
-    Spec(_F, "investor_daily", "KR", "종목 투자자별 일별 매매 (date 까지 30일)", (SYMBOL, DATE),
+    Spec(_F, "investor_daily", "KR", "종목 투자자별 일별 매매 (date 까지 30일, 생략하면 최근)", (SYMBOL, DATE),
          (("value", "KRW"), ("investors.*.*_value", "KRW 백만원"))),
     Spec(_F, "investor_estimate", "KR", "종목 외국인/기관 장중 추정 순매수 (가집계). slot 은 KIS 입력구분 코드(1~5)",
          (SYMBOL,)),
@@ -199,7 +199,7 @@ def kinds(group: str) -> list[dict]:
 
 
 def build_query(group: str, kind: str, raw: dict[str, str], today: date) -> DatasetQuery:
-    """API 쿼리 문자열을 검사해 DatasetQuery 로. 잘못된 값은 INVALID_REQUEST."""
+    """API 쿼리 문자열을 검사해 DatasetQuery 로. 잘못된 값은 INVALID_REQUEST. 미래 날짜는 거부한다."""
     def bad(msg: str) -> OmsError:
         return OmsError("INVALID_REQUEST", msg)
 
@@ -218,10 +218,11 @@ def build_query(group: str, kind: str, raw: dict[str, str], today: date) -> Data
                 raise bad(f"{o.name} 필요")
             if o.default not in (None, ()):
                 out.append((o.name, o.default))
-            elif o.type == "date" and o.name == "date":
-                out.append((o.name, today))
-            continue
-        out.append((o.name, _convert(o, v, bad)))
+            continue   # 날짜를 비우면 KIS 가 최근 거래일 기준으로 준다 (오늘 날짜는 장 마감 전후로 거부되는 TR 이 있다)
+        x = _convert(o, v, bad)
+        if o.type == "date" and x > today:
+            raise bad(f"{o.name} 는 오늘({today}) 이전이어야 함")
+        out.append((o.name, x))
     return DatasetQuery(group, kind, tuple(out))
 
 
