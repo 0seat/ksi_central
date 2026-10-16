@@ -81,8 +81,8 @@ class SimBroker(Broker):
         self.candle_page_size = 120
         self.candle_calls = 0
         self.kr_days: dict[date, bool] = {}
-        self.rankings: dict[str, list[dict]] = {}   # kind → 공통 형식 행
-        self.ranking_calls: list = []
+        self.datasets: dict[str, list[dict]] = {}   # kind → 공통 형식 행 (순위/수급)
+        self.dataset_calls: list = []
         self.market_day_calls = 0
 
     # ───────────── 테스트 조작 ─────────────
@@ -230,11 +230,11 @@ class SimBroker(Broker):
         self.market_day_calls += 1
         return [(d, o) for d, o in sorted(self.kr_days.items()) if d >= start]
 
-    async def ranking(self, query) -> list[dict]:
-        self.ranking_calls.append(query)
-        if query.kind not in self.rankings:
-            raise BrokerUnavailable(f"sim: {query.kind} 순위 없음")
-        return list(self.rankings[query.kind])
+    async def dataset(self, query) -> list[dict]:
+        self.dataset_calls.append(query)
+        if query.kind not in self.datasets:
+            raise BrokerUnavailable(f"sim: {query.kind} 데이터 없음")
+        return list(self.datasets[query.kind])
 
     async def orderbook(self, instrument: Instrument) -> OrderBook:
         q = self.quotes.get(instrument.id)

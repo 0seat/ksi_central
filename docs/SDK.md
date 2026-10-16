@@ -116,28 +116,88 @@ avg_fill_price, status, reject_reason, orig_order_id, broker_order_no, created_a
 | `history_subscribe(symbol)` | `POST /market/history-subscriptions` | 보관 대상 등록 (종목 또는 지수). 보관본이 없으면 서버가 백그라운드로 처음부터 받고(그 시장 장중이면 마감 후) 이후 매일 이어 받는다. `{symbol, created, sources}` |
 | `history_unsubscribe(symbol)` | `DELETE /market/history-subscriptions/{symbol}` | 내 등록 취소 (관리자 키는 그 대상의 앱 등록 전부). 보관본은 남는다. `{symbol, removed, still_collected_by}`: 다른 앱이나 `config`, `nasdaq100` 이 남아 있으면 수집 계속 |
 | `history_subscriptions(mine=False)` | `GET /market/history-subscriptions` | 보관 대상 전체 `[{symbol, sources, state, last_minute, error}]`. sources: `config`(central.toml), `nasdaq100`, `sub:<id>`(앱), `admin`. state: `ok`, `fetching`(처음 받는 중), `pending`(대기) |
-| `rankings(kind, limit=100, **filters)` | `GET /market/rankings/{kind}` | KIS 순위. 같은 조건은 서버가 10초 캐시를 같이 쓴다(`cached`). kind: `kr_volume`(sort: `volume` `volume_growth` `volume_turnover` `value` `value_turnover`), `kr_fluctuation`(sort: `up` `down` `open_up` `open_down` `range`, `min_rate` `max_rate` %), `kr_volume_power`(체결강도), `us_volume_surge`(`minutes` 분 전 대비 거래량 급증), `us_price_fluct`(sort `up` `down`, `minutes` 분 전 대비). 국내 필터: `universe`(`all` `kospi` `kosdaq` `kospi200`), `stock_type`(`all` `common` `preferred`), `exclude`(목록: `caution` `managed` `liquidation` `unfaithful` `preferred` `halted` `etf` `etn` `no_credit` `spac`), `min_price` `max_price` `min_volume`. 미국: `exchange`(`NAS` `NYS` `AMS`), `minutes`(1 2 3 5 10 15 20 30 60 120), `min_volume`. 행 공통 `rank, symbol, name, last, change, change_rate, volume` + 종류별 필드(아래). 국내 최대 30행, 미국 100행 |
+| `rankings(kind=None, limit=100, **filters)` | `GET /market/rankings/{kind}` | KIS 순위 25종 (아래 "순위와 수급") |
+| `flows(kind=None, limit=500, **filters)` | `GET /market/flows/{kind}` | 국내 수급 15종 (아래 "순위와 수급") |
 | `ticks(symbol, day=None, limit=10000)` | `GET /market/ticks/{symbol}` | 저장된 틱 (상시 수집 종목이나 누군가 구독 중일 때만 쌓임) |
 | `calendar(market="KR", start=, end=)` | `GET /market/calendar` | `days: [{date, open, source, early_close_et?}]` |
 | `market_status(market=None)` | `GET /market/status` | 시장별 `{accepting_orders, reason}` |
 | `symbols(q="", market=None, limit=50)` | `GET /market/symbols` | 이름/코드 검색. `[{id, market, code, exchange, name, name_en, kind, nxt_tradable}]` |
 | `fx()` | `GET /market/fx` | USDKRW 환율 |
 
-순위 행의 종류별 필드 (`rankings`)
+### 순위와 수급 (`rankings`, `flows`)
 
-| kind | 추가 필드 |
-|---|---|
-| `kr_volume` | `prev_volume, avg_volume, volume_growth_rate`(전일 대비 %), `volume_turnover, value`(거래대금), `avg_value, value_turnover, listed_shares` |
-| `kr_fluctuation` | `high, high_time, low, low_time, up_days, down_days`(연속 상승/하락 일수), `open_change_rate`(sort `open_up/open_down` 일 때만 값), `range_rate`(sort `range` 일 때만 값) |
-| `kr_volume_power` | `strength`(당일 체결강도, 상한 999.99), `buy_volume, sell_volume` |
-| `us_volume_surge` | `name_en, exchange, bid, ask, base_volume`(N분 전 거래량), `volume_increase, volume_increase_rate` |
-| `us_price_fluct` | `name_en, exchange, bid, ask, base_price`(N분 전 가격), `base_change, base_change_rate` |
+종류와 조건은 서버가 알려 준다: `await cs.rankings()`, `await cs.flows()` (각 종류의 `options`: 이름, 허용값, 기본값, `units`: 금액 단위).
+조건은 키워드 인자로 넘긴다. 같은 조건은 10초 동안 서버 캐시를 같이 쓰고(`cached`), 결과는 `{kind, market, query, units, ts, cached, rows}`.
 
-순위 사용 시 참고
-- 순위는 KIS 가 계산한 그대로다. 국내 `kr_fluctuation` sort `down` 처럼 KIS 정렬이 완전히 단조롭지 않은 경우가 있다.
+```python
+await cs.rankings("kr_volume", sort="volume_growth", exclude=["spac", "etf", "etn"], stock_type="common")
+await cs.rankings("kr_investor_net", investor="foreign", sort="buy", by="value")
+await cs.rankings("us_volume_surge", minutes=5, min_volume=100000)
+await cs.flows("investor_daily", symbol="KR:005930")
+await cs.flows("market_program", market="kosdaq")
+```
+
+순위 (`rankings`): 행 공통 `rank, symbol, name, last, change, change_rate, volume` + 아래 필드. 국내 최대 30행(신용 100), 미국 100행.
+
+| kind | 내용과 조건 | 추가 필드 |
+|---|---|---|
+| `kr_volume` | 거래량. sort `volume` `volume_growth` `volume_turnover` `value` `value_turnover`, stock_type, exclude | `prev_volume, avg_volume, volume_growth_rate, volume_turnover, value, avg_value, value_turnover, listed_shares` |
+| `kr_fluctuation` | 등락률(전일 종가 기준). sort `up` `down` `open_up` `open_down` `range`, exclude, `min_rate` `max_rate` | `high, high_time, low, low_time, up_days, down_days, open_change_rate`(open_* 일 때만), `range_rate`(range 일 때만) |
+| `kr_volume_power` | 체결강도. stock_type, exclude | `strength`(상한 999.99), `buy_volume, sell_volume` |
+| `kr_near_high_low` | 신고가/신저가 근접. sort `high` `low`, `max_gap`(%) | `new_high, high_gap_rate, new_low, low_gap_rate, base_price, bid, ask, bid_size, ask_size` |
+| `kr_disparity` | 이격도. sort `high` `low`, `period` 5 10 20 60 120 | `disparity_5 ... disparity_120` |
+| `kr_expected` | 예상체결. `session` `open`(장전) `close`(장마감), sort `up` `up_amount` `flat` `down` `down_amount` `volume` `value`. last 는 예상체결가, volume 은 예상체결량 | `base_price, expected_value, bid, ask, bid_size, ask_size, total_bid_size, total_ask_size` |
+| `kr_order_imbalance` | 호가잔량. sort `net_buy` `net_sell` `buy_ratio` `sell_ratio` | `total_ask_size, total_bid_size, net_bid_size, bid_ratio, ask_ratio` |
+| `kr_short_sale` | 공매도 상위. `period` 1d 2d 3d 4d 1w 2w 3w 1m 2m 3m | `value, short_qty, short_qty_ratio, short_value, short_value_ratio, avg_price, from_date, to_date` |
+| `kr_credit` | 신용잔고. sort `margin_*`(융자) `stock_loan_*`(대주) x `ratio` `qty` `amount` `ratio_up` `ratio_down`, `days`(N일 전 대비) | `margin_shares, margin_amount, margin_ratio, margin_change_rate, stock_loan_*` (금액 단위 미확인) |
+| `kr_interest` | 관심종목 등록 상위 | `value, bid, ask, interest_count` |
+| `kr_hts_views` | HTS 조회 상위 20 | `rank, symbol` 만 |
+| `kr_market_cap` | 시가총액. stock_type | `listed_shares, market_cap`(억원), `market_weight` |
+| `kr_limit` | 상한가/하한가. sort `upper` `lower`, `near` limit 8 10 15 20 25(% 근접) | `upper_limit, lower_limit, total_ask_size, total_bid_size, ask_size, bid_size, prev_volume, buy_volume, sell_volume, volume_ratio` |
+| `kr_investor_net` | 외국인/기관 순매수 상위(장중 가집계). sort `buy` `sell`, `investor` all foreign institution other, `by` qty value | `net_qty, investors{foreign, institution, investment_trust, ...: net_qty, net_value(백만원)}` |
+| `kr_foreign_broker` | 외국계 창구 매매 상위(가집계). sort `buy` `sell`, `by` value qty | `net_qty, sell_qty, buy_qty` |
+| `us_volume_surge` | `minutes` 분 전 대비 거래량 급증 | `base_volume, volume_increase, volume_increase_rate` |
+| `us_price_fluct` | `minutes` 분 전 대비 급등/급락. sort `up` `down` | `base_price, base_change, base_change_rate` |
+| `us_updown` | 상승률/하락률. sort `up` `down`, `days` 1 2 3 5 10 20 30 60 120 250 (1 = 당일) | `base_price, base_change, base_change_rate` |
+| `us_new_high_low` | 신고가/신저가. sort `high` `low`, `mode` hold(돌파 유지) touch(일시), `minutes` | `base_price, base_change, base_change_rate` |
+| `us_volume` / `us_value` | 거래량 / 거래대금. `days`, `min_price` `max_price` | `value, avg_volume` / `value, avg_value` |
+| `us_volume_growth` | 거래증가율. `days` | `avg_volume, volume_growth_rate` |
+| `us_turnover` | 거래회전율. `days` | `listed_shares, turnover` |
+| `us_volume_power` | 매수체결강도. `days` | `strength, strength_now` |
+| `us_market_cap` | 시가총액 | `listed_shares, market_cap`(USD), `market_weight` |
+
+국내 공통 조건: `universe`(`all` `kospi` `kosdaq` `kospi200`, 일부는 kospi200 없음), `min_price` `max_price` `min_volume`.
+`exclude`(`caution` `managed` `liquidation` `unfaithful` `preferred` `halted` `etf` `etn` `no_credit` `spac`)는 거래량/등락률/체결강도만.
+미국 공통: `exchange`(`NAS` `NYS` `AMS`), `min_volume`(KIS 단계값 100, 1천, 1만, 10만, 100만, 1000만으로 내려 조회한 뒤 서버가 행을 거름).
+
+수급 (`flows`, 국내만)
+
+| kind | 조건 | 행 |
+|---|---|---|
+| `investor_daily` | `symbol`, `date`(기본 오늘, 그날까지 30일) | `date, close, change, change_rate, volume, value, open, high, low, investors` |
+| `investor_estimate` | `symbol` | 장중 추정 순매수 `slot`(KIS 입력구분 1~5, 시각 대응은 공식 문서에 없음), `foreign_net_qty, institution_net_qty, total_net_qty` |
+| `program` | `symbol` | 장중 프로그램 매매 최근 30건 `time, last, volume, sell_qty, buy_qty, net_qty, sell_value, buy_value, net_value`(원) |
+| `program_daily` | `symbol`, `date` | 일별 프로그램 매매 (원) |
+| `foreign_broker` | `symbol` | 외국계 창구 장중 추이 `time, sell_qty, buy_qty, net_qty, net_qty_change` |
+| `members` | `symbol` | 행 하나: `sell`, `buy`(상위 5개 창구 `broker, qty, ratio, qty_change, foreign`), `foreign_total` |
+| `buy_sell_daily` | `symbol`, `start`, `end` | `date, sell_qty, buy_qty` |
+| `short_sale_daily` | `symbol`, `start`, `end` | `short_qty, short_qty_ratio, short_value, short_value_ratio, cum_short_qty, cum_short_value, avg_price` |
+| `credit_daily` | `symbol`, `date`(결제일) | `margin_*`(융자), `stock_loan_*`(대주): `new_shares, repaid_shares, shares, amount, ratio, supply_rate` |
+| `stock_loan_daily` | `symbol`, `start`, `end` | 대차거래 `new_shares, repaid_shares, balance_change, balance_shares, balance_amount`(백만원) |
+| `market_investor_daily` | `market` kospi kosdaq, `date` | 일별 `index, change_rate, investors`(net_qty 천주 추정, net_value 백만원) |
+| `market_program` | `market` | 장중 `arbitrage, non_arbitrage`(sell/buy/net_value 백만원), `net_value` |
+| `market_program_daily` | `market`, `start`, `end` | 일별 `arbitrage, non_arbitrage, total` (qty, value 백만원) |
+| `market_program_investor` | `market` | 당일 투자자별 프로그램 매매 `investor, arbitrage, non_arbitrage, total` |
+| `market_funds` | `date` | 일별 증시자금(억원) `customer_deposit, margin_loan, unsettled, futures_deposit, equity_fund, bond_fund, mmf, ...` |
+
+`investors` 는 `{foreign, individual, institution, securities, investment_trust, private_fund, bank, insurance, merchant_bank, pension_fund, other_corp, other_org}` 각각 `net_qty, net_value`(종목은 buy/sell 도). 투자자별 금액은 백만원.
+
+참고
+- 숫자 형식: 수량(`*volume, *qty, *shares, *size, *count, *days`, rank)은 정수, 나머지(가격, 금액, 비율)는 문자열 Decimal.
+- 순위는 KIS 가 계산한 그대로다. 국내 `kr_fluctuation` sort `down` 처럼 정렬이 완전히 단조롭지 않은 경우가 있다.
 - 순위에는 종목 마스터에 없는 종목(예: `KR:Q` 로 시작하는 ETN)이 섞일 수 있다. 주문 전에 `symbols()` 로 확인할 것.
-- 스팩(SPAC)과 우선주가 거래증가율, 체결강도 상위를 자주 차지한다. 보통 `exclude=["spac","etf","etn"]`, `stock_type="common"` 을 같이 쓴다.
-- 국내는 KRX 기준(통합/NXT 순위 아님). 미국 `min_volume` 은 KIS 단계값으로 조회한 뒤 서버가 행을 거른다.
+- 스팩과 우선주가 거래증가율, 체결강도 상위를 자주 차지한다. 보통 `exclude=["spac","etf","etn"]`, `stock_type="common"` 을 같이 쓴다.
+- 국내는 KRX 기준(통합/NXT 아님). 장중 값(가집계, 추정)은 확정치가 아니다.
 
 ---
 

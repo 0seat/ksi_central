@@ -167,14 +167,28 @@ class CentralClient:
         return await self._req("GET", f"/market/history/{symbol}", params=_dates(
             {"interval": interval, "adjust": adjust, "limit": limit, "start": start, "end": end}))
 
-    async def rankings(self, kind: str, *, limit: int = 100, **filters) -> dict:
-        """KIS 순위. kind: kr_volume, kr_fluctuation, kr_volume_power, us_volume_surge, us_price_fluct.
-        filters 예: sort="volume_growth", universe="kosdaq", exclude=["etf", "etn", "spac"], min_volume=100000,
-        min_price="1000", exchange="NAS", minutes=5. 결과 {kind, market, query, ts, cached, rows}."""
-        if isinstance(filters.get("exclude"), (list, tuple, set)):
-            filters["exclude"] = ",".join(filters["exclude"])
-        params = {k: str(v) if not isinstance(v, (int, str)) else v for k, v in filters.items()}
-        return await self._req("GET", f"/market/rankings/{kind}", params={**params, "limit": limit})
+    async def rankings(self, kind: str | None = None, *, limit: int = 100, **filters) -> Any:
+        """KIS 순위. kind 없이 부르면 종류와 조건 목록. 예: rankings("kr_volume", sort="volume_growth",
+        exclude=["spac", "etf", "etn"], stock_type="common"), rankings("us_volume_surge", minutes=5).
+        결과 {kind, market, query, units, ts, cached, rows}."""
+        return await self._dataset("rankings", kind, limit, filters)
+
+    async def flows(self, kind: str | None = None, *, limit: int = 500, **filters) -> Any:
+        """국내 수급. kind 없이 부르면 종류와 조건 목록. 예: flows("investor_daily", symbol="KR:005930"),
+        flows("market_program", market="kosdaq"), flows("short_sale_daily", symbol="KR:005930", start="2026-09-01")."""
+        return await self._dataset("flows", kind, limit, filters)
+
+    async def _dataset(self, group: str, kind: str | None, limit: int, filters: dict) -> Any:
+        if kind is None:
+            return await self._req("GET", f"/market/{group}")
+        params = {}
+        for k, v in filters.items():
+            if isinstance(v, (list, tuple, set)):
+                v = ",".join(v)
+            elif hasattr(v, "isoformat"):
+                v = v.isoformat()
+            params[k] = v if isinstance(v, (int, str)) or v is None else str(v)
+        return await self._req("GET", f"/market/{group}/{kind}", params={**params, "limit": limit})
 
     async def history_subscriptions(self, mine: bool = False) -> dict:
         """매일 보관하는 대상과 출처, 상태. mine=True 면 이 앱이 등록한 것만."""

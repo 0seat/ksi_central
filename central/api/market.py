@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import datetime as dt
 import hmac
-from decimal import Decimal
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Request
@@ -235,33 +234,44 @@ def history_unsubscribe(app: App, owner: Owner, symbol: str):
                "still_collected_by": app.ops.history_targets.sources().get(key, [])})
 
 
+# ───────────── 순위 / 수급 (central/marketdata/datasets.py) ─────────────
+async def _dataset(app, request: Request, group: str, kind: str, limit: int):
+    raw = {k: v for k, v in request.query_params.items() if k != "limit"}
+    q = app.datasets.query(group, kind, raw)
+    rows, ts, cached = await app.datasets.get(q)
+    return ok({"kind": kind, "market": q.market, "query": q.to_json(), "units": dict(q.spec.units), "ts": ts,
+               "cached": cached, "rows": rows[:limit]})
+
+
+@router.get("/rankings")
+def ranking_kinds():
+    """순위 종류와 각 종류가 받는 조건(이름, 허용값, 기본값), 금액 단위."""
+    from central.marketdata.datasets import kinds
+
+    return ok(kinds("rankings"))
+
+
 @router.get("/rankings/{kind}")
-async def rankings(app: App, kind: str, sort: str | None = None, universe: str = "all", stock_type: str = "all",
-                   exclude: str | None = None, min_price: Decimal | None = None, max_price: Decimal | None = None,
-                   min_volume: int | None = None, min_rate: Decimal | None = None, max_rate: Decimal | None = None,
-                   exchange: str = "NAS", minutes: int = 5, limit: int = Query(default=100, ge=1, le=100)):
-    """KIS 순위. 같은 조건은 10초 동안 서버 캐시를 같이 쓴다 (cached=true). 국내 최대 30행, 미국 100행.
+async def rankings(app: App, request: Request, kind: str, limit: int = Query(default=100, ge=1, le=100)):
+    """KIS 순위. 조건은 쿼리 문자열로 (GET /market/rankings 가 종류별 조건을 알려 준다).
+    같은 조건은 10초 동안 서버 캐시를 같이 쓴다 (cached=true). 국내 최대 30행(신용잔고 100), 미국 100행.
+    행 공통: rank, symbol, name, last, change, change_rate, volume (+ 종류별 필드)."""
+    return await _dataset(app, request, "rankings", kind, limit)
 
-    kind:
-    - kr_volume: 거래량 순위. sort=volume(기본)|volume_growth(전일 대비 증가율)|volume_turnover|value|value_turnover
-    - kr_fluctuation: 등락률 순위 (전일 종가 기준). sort=up(기본)|down|open_up|open_down(시가 대비)|range(고저 폭).
-      min_rate, max_rate 로 등락률 구간 (%)
-    - kr_volume_power: 체결강도 순위
-    - us_volume_surge: minutes 분 전 대비 거래량 급증. exchange=NAS|NYS|AMS, minutes=1,2,3,5,10,15,20,30,60,120
-    - us_price_fluct: minutes 분 전 대비 가격 급등(sort=up, 기본)|급락(down)
-    국내 공통: universe=all|kospi|kosdaq|kospi200, stock_type=all|common|preferred (kr_fluctuation 제외),
-    exclude=쉼표 목록 (caution 투자위험/경고/주의, managed 관리, liquidation 정리매매, unfaithful 불성실공시,
-    preferred 우선주, halted 거래정지, etf, etn, no_credit 신용주문불가, spac), min_price, max_price, min_volume.
-    미국 min_volume 은 KIS 단계값(100, 1천, 1만, 10만, 100만, 1000만)으로 내려 조회한 뒤 행을 거른다.
-    """
-    from central.marketdata.rankings import build_query
 
-    q = build_query(kind, sort=sort, universe=universe, stock_type=stock_type, exclude=exclude,
-                    min_price=min_price, max_price=max_price, min_volume=min_volume, min_rate=min_rate,
-                    max_rate=max_rate, exchange=exchange, minutes=minutes)
-    rows, ts, cached = await app.rankings.get(q)
-    return ok({"kind": kind, "market": q.market, "query": q.to_json(), "ts": ts, "cached": cached,
-               "rows": rows[:limit]})
+@router.get("/flows")
+def flow_kinds():
+    """수급 종류와 조건, 금액 단위."""
+    from central.marketdata.datasets import kinds
+
+    return ok(kinds("flows"))
+
+
+@router.get("/flows/{kind}")
+async def flows(app: App, request: Request, kind: str, limit: int = Query(default=500, ge=1, le=500)):
+    """국내 수급: 종목별(symbol 필요) 투자자/프로그램/외국계 창구/공매도/신용/대차, 시장별(market=kospi|kosdaq)
+    투자자/프로그램/증시자금. 같은 조건은 10초 캐시를 같이 쓴다."""
+    return await _dataset(app, request, "flows", kind, limit)
 
 
 @router.get("/status")
