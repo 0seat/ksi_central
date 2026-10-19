@@ -5,18 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from base64 import b64encode
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
 
 from central.broker.kis import tr
 from central.broker.kis.auth import KST, KisAuth, Token, TokenCache
-from central.broker.kis.crypto import aes_cbc_base64_decrypt
+from central.broker.kis.crypto import aes_cbc_base64_decrypt, aes_cbc_decrypt
 from central.broker.kis.rest import KisApiError, KisRestClient, RateLimiter
 from central.broker.kis.ws import KisWebSocket
 from central.settings import load_settings
@@ -33,11 +30,15 @@ def test_tr_env_selection() -> None:
     assert tr.us_ws_key("NYSE", "KO") == "DNYSKO"
 
 
-def test_aes_decrypt_roundtrip() -> None:
-    key, iv = "k" * 32, "i" * 16
-    plain = "a^b^체결^1"
-    enc = b64encode(AES.new(key.encode(), AES.MODE_CBC, iv.encode()).encrypt(pad(plain.encode(), 16))).decode()
-    assert aes_cbc_base64_decrypt(key, iv, enc) == plain
+def test_aes_decrypt() -> None:
+    # NIST SP 800-38A F.2.6 CBC-AES256.Decrypt
+    key = bytes.fromhex("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4")
+    enc = bytes.fromhex("f58c4c04d6e5f1ba779eabfb5f7bfbd69cfc4e967edb808d679f777bc6702c7d")
+    assert aes_cbc_decrypt(key, bytes(range(16)), enc).hex() ==         "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51"
+    # KIS 형식: 문자열 키/IV, base64, PKCS7 패딩
+    assert aes_cbc_base64_decrypt("k" * 32, "i" * 16, "+qqUobClfFIwxE0fNyhZEQ==") == "a^b^체결^1"
+    with pytest.raises(ValueError):
+        aes_cbc_base64_decrypt("k" * 32, "j" * 16, "+qqUobClfFIwxE0fNyhZEQ==")    # 잘못된 IV → 패딩 깨짐
 
 
 async def test_rate_limiter_spacing() -> None:
@@ -138,6 +139,6 @@ async def test_ws_parse_data_and_ack(home: Path) -> None:
     await ws._on_system(json.dumps(ack))
     assert fut.result().ok and fut.result().encrypted
 
-    enc = b64encode(AES.new(key.encode(), AES.MODE_CBC, iv.encode()).encrypt(pad("a^b^c".encode(), 16))).decode()
+    enc = "c7GygHCBJy9Vd0R6NwCTXg=="          # "a^b^c" (키 k*32, IV i*16, PKCS7)
     ws._on_data(f"1|H0STCNI9|001|{enc}")
     assert ws.queue.get_nowait().records == [["a", "b", "c"]]
