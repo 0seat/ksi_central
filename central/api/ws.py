@@ -181,7 +181,12 @@ async def websocket(ws: WebSocket) -> None:
         while True:
             get = asyncio.ensure_future(conn.queue.get())
             over = asyncio.ensure_future(conn.overflow.wait())
-            done, _ = await asyncio.wait({get, over}, return_when=asyncio.FIRST_COMPLETED)
+            try:
+                done, _ = await asyncio.wait({get, over}, return_when=asyncio.FIRST_COMPLETED)
+            finally:   # 연결 종료로 writer 가 취소되면 대기 중인 두 작업도 정리 (Task was destroyed 방지)
+                if not get.done() and not over.done():
+                    get.cancel()
+                    over.cancel()
             if over in done:
                 get.cancel()
                 await ws.close(code=4429, reason="SLOW_CONSUMER")
