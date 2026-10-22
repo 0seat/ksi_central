@@ -239,6 +239,7 @@ async def test_chart_and_symbols(env: Env) -> None:
         assert d["symbol"] == "KR:005930" and d["error"] is None and d["symbols"][0]["fills"] == 2
         assert len(d["candles"]) == 61 and d["candles"][0][0].startswith("2026-10-14T09:00")
         assert [(m["side"], m["qty"]) for m in d["markers"]] == [("buy", 10), ("sell", 5)]
+        assert {m["sub_id"] for m in d["markers"]} == {a_id} and d["positions"][0]["sub_id"] == a_id   # 앱 구분용
         assert [(p["sub"], p["qty"], D(p["avg_price"])) for p in d["positions"]] == [("A", 5, D("61000"))]
         calls = env.sim.candle_calls + env.paper.candle_calls
         await data(c, "/api/w/chart", symbol="KR:005930")                  # 짧은 캐시: KIS 를 다시 부르지 않는다

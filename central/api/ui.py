@@ -702,9 +702,10 @@ async def w_chart(app: CentralApp, viewer: Viewer, params: dict) -> dict:
                                        FillRow.filled_at >= start, FillRow.filled_at <= end)
                  .order_by(FillRow.filled_at, FillRow.id))
             marks = [{"ts": queries.kst(f.filled_at), "side": f.side, "price": f.price, "qty": f.qty,
-                      "order_id": f.order_id, "sub": names.get(f.sub_account_id, "?"), "pnl": f.realized_pnl}
+                      "order_id": f.order_id, "sub_id": f.sub_account_id, "sub": names.get(f.sub_account_id, "?"),
+                      "pnl": f.realized_pnl}
                      for f in s.scalars(q)]
-        pos = [{"sub": names[x.id], "qty": p.qty, "avg_price": p.avg_price}
+        pos = [{"sub_id": x.id, "sub": names[x.id], "qty": p.qty, "avg_price": p.avg_price}
                for x in subs for p in app.accounts.positions(x.id) if p.instrument_id == inst.id and p.qty]
         return marks, pos
 

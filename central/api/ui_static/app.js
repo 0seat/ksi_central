@@ -56,6 +56,12 @@ const STATUS_KO = {
 const SIDE_KO = { buy: '<span class="up">매수</span>', sell: '<span class="down">매도</span>' };
 const KIND_KO = { order: "주문", account: "계좌조회", quote: "시세", ranking: "순위/수급", other: "기타" };
 const PALETTE = ["#2f6fde", "#d93a3a", "#1f9d55", "#c98a00", "#8a4fd8", "#0f9bb0", "#d65c9a", "#6b7484"];
+// 앱 구분 색. 매수/매도(빨강/파랑)와 헷갈리지 않게 빨강, 파랑 계열은 뺀다. 같은 앱은 모든 위젯에서 같은 색
+const APP_COLORS = ["#1f9d55", "#e07b39", "#8a4fd8", "#0f9bb0", "#d65c9a", "#a07c00", "#795548", "#6b7484"];
+function subColor(id) {
+  const i = S.me ? S.me.subs.findIndex(s => s.id === id) : -1;
+  return APP_COLORS[(i >= 0 ? i : id) % APP_COLORS.length];
+}
 
 function table(cols, rows, opts = {}) {
   if (!rows.length) return `<div class="empty">${esc(opts.empty || "없음")}</div>`;
@@ -165,7 +171,7 @@ function stackedBars(perKind, { height = 90, width = 800 } = {}) {
 }
 
 // 캔들: 국내 관례대로 양봉 빨강, 음봉 파랑. 체결은 체결가 위치에 매수 ▲(빨강), 매도 ▼(파랑)
-function candleChart(d, { width = 800, priceH = 260, volH = 56 } = {}) {
+function candleChart(d, { width = 800, priceH = 260, volH = 56, multiApp = null } = {}) {
   const daily = d.interval === "1d";
   const bars = d.candles.map(c => ({ t: new Date(c[0]).getTime(), iso: c[0], o: num(c[1]), h: num(c[2]), l: num(c[3]), c: num(c[4]), v: num(c[5]) }));
   if (!bars.length) return null;
@@ -184,12 +190,16 @@ function candleChart(d, { width = 800, priceH = 260, volH = 56 } = {}) {
   d.markers.forEach(m => {
     const i = idxOf(new Date(m.ts).getTime());
     if (i < 0) return;
-    const k = `${i}:${m.side}`;
-    const g = groups[k] || (groups[k] = { i, side: m.side, qty: 0, amount: 0, pnl: 0, items: [] });
+    const k = `${i}:${m.side}:${m.sub_id}`;
+    const g = groups[k] || (groups[k] = { i, side: m.side, sub_id: m.sub_id, sub: m.sub, qty: 0, amount: 0, pnl: 0, items: [] });
     g.qty += m.qty; g.amount += num(m.price) * m.qty; g.pnl += num(m.pnl); g.items.push(m);
   });
   const marks = Object.values(groups).map(g => ({ ...g, price: g.amount / g.qty }));
-  const avgs = d.positions.map(p => ({ sub: p.sub, price: num(p.avg_price) }));
+  const avgs = d.positions.map(p => ({ sub: p.sub, sub_id: p.sub_id, price: num(p.avg_price) }));
+  // 앱이 둘 이상이면 앱마다 색을 달리하고, 같은 봉에서는 옆으로 조금씩 비켜 그린다. 방향(▲ 매수, ▼ 매도)은 그대로
+  const apps = [...new Set(d.markers.map(m => m.sub_id).concat(avgs.map(a => a.sub_id)))];
+  const multi = multiApp ?? apps.length > 1;
+  const appOffset = id => multi ? (apps.indexOf(id) - (apps.length - 1) / 2) * 9 : 0;
   const last = num(d.last);
 
   const ys = bars.flatMap(b => [b.h, b.l]).concat(marks.map(m => m.price), avgs.map(a => a.price));
@@ -223,9 +233,10 @@ function candleChart(d, { width = 800, priceH = 260, volH = 56 } = {}) {
     g += `<rect x="${X(i) - bw / 2}" y="${top}" width="${bw}" height="${h}" fill="${col}"/>`;
     g += `<rect x="${X(i) - bw / 2}" y="${VY(b.v)}" width="${bw}" height="${vTop + volH - VY(b.v)}" fill="${col}" opacity=".45"/>`;
   });
-  avgs.forEach(a => {
-    g += `<line x1="${L}" x2="${W - R}" y1="${Y(a.price)}" y2="${Y(a.price)}" stroke="var(--warn)" stroke-dasharray="5 4"/>`;
-    g += `<text x="${L + 4}" y="${Y(a.price) - 4}" style="fill:var(--warn)">평단 ${esc(a.sub)} ${esc(fy(a.price))}</text>`;
+  avgs.forEach((a, k) => {
+    const col = multi ? subColor(a.sub_id) : "var(--warn)";
+    g += `<line x1="${L}" x2="${W - R}" y1="${Y(a.price)}" y2="${Y(a.price)}" stroke="${col}" stroke-dasharray="5 4"/>`;
+    g += `<text x="${L + 4 + k * 150}" y="${Y(a.price) - 4}" style="fill:${col}">평단 ${esc(a.sub)} ${esc(fy(a.price))}</text>`;
   });
   if (last !== null && last >= y0 && last <= y1) {
     g += `<line x1="${L}" x2="${W - R}" y1="${Y(last)}" y2="${Y(last)}" stroke="var(--muted)" stroke-dasharray="1 3"/>`;
@@ -233,16 +244,16 @@ function candleChart(d, { width = 800, priceH = 260, volH = 56 } = {}) {
     g += `<text x="${W - R + 6}" y="${Y(last) + 4}" style="fill:var(--card)">${esc(fy(last))}</text>`;
   }
   marks.forEach(m => {
-    const x = X(m.i), y = Y(m.price), s = 7;
+    const x = X(m.i) + appOffset(m.sub_id), y = Y(m.price), s = 7;
     const buy = m.side === "buy";
     const path = buy ? `M${x},${y} l${-s},${s * 1.6} h${2 * s} z` : `M${x},${y} l${-s},${-s * 1.6} h${2 * s} z`;
-    const tip = `${buy ? "매수" : "매도"} ${fmt(m.qty)}주 @ ${fy(m.price)} (${m.items.length}건, ${[...new Set(m.items.map(x => x.sub))].join(", ")})` +
+    const tip = `${m.sub} ${buy ? "매수" : "매도"} ${fmt(m.qty)}주 @ ${fy(m.price)} (${m.items.length}건)` +
       `\n${m.items.map(x => `${hms(x.ts)} #${x.order_id ?? "-"} ${fmt(x.qty)} @ ${fy(x.price)}${!buy ? ` 손익 ${fmt(x.pnl)}` : ""}`).join("\n")}`;
-    g += `<path class="mark" d="${path}" fill="${buy ? "var(--up)" : "var(--down)"}" stroke="var(--card)" stroke-width="1" data-order="${m.items[m.items.length - 1].order_id ?? ""}"><title>${esc(tip)}</title></path>`;
+    g += `<path class="mark" d="${path}" fill="${multi ? subColor(m.sub_id) : buy ? "var(--up)" : "var(--down)"}" stroke="var(--card)" stroke-width="1" data-order="${m.items[m.items.length - 1].order_id ?? ""}"><title>${esc(tip)}</title></path>`;
   });
   g += `<line class="xhair" x1="0" x2="0" y1="${T}" y2="${vTop + volH}" stroke="var(--muted)" stroke-dasharray="2 2" visibility="hidden"/>`;
   g += `<rect class="hover" x="${L}" y="${T}" width="${W - L - R}" height="${vTop + volH - T}" fill="transparent"/>`;
-  return { html: `${svgOpen(W, H)}${g}</svg>`, bars, X, slot, L, daily };
+  return { html: `${svgOpen(W, H)}${g}</svg>`, bars, X, slot, L, daily, multi };
 }
 
 // ───────────── 위젯 ─────────────
@@ -303,7 +314,7 @@ W.pnl_curve = {
   render(body, d) {
     const byCur = {};
     d.series.forEach(s => (byCur[s.currency] = byCur[s.currency] || []).push({
-      name: s.name, points: s.points.map(p => [new Date(p[0]).getTime(), num(p[1])]) }));
+      name: s.name, color: subColor(s.sub_id), points: s.points.map(p => [new Date(p[0]).getTime(), num(p[1])]) }));
     const curs = Object.keys(byCur);
     body.innerHTML = curs.length ? curs.map(c => `<div class="muted">${esc(c)} 누적 실현손익 (수수료, 세금 차감)</div>` +
       lineChart(byCur[c], { fmtY: v => money(v, c), width: widthOf(body) })).join("") : '<div class="empty">오늘 체결 없음</div>';
@@ -510,7 +521,12 @@ W.chart = {
     mark();
     card.insertBefore(f, card.querySelector(".card-body"));
   },
-  render(body, d, spec, card) {
+  render(body, full, spec, card) {
+    // 앱별 표시 켜고 끄기 (범례의 앱 칩). 데이터는 그대로 두고 다시 그리기만 한다
+    spec.hide = spec.hide || new Set();
+    const appList = [];
+    full.markers.concat(full.positions).forEach(m => { if (!appList.some(a => a.id === m.sub_id)) appList.push({ id: m.sub_id, name: m.sub }); });
+    const d = { ...full, markers: full.markers.filter(m => !spec.hide.has(m.sub_id)), positions: full.positions.filter(p => !spec.hide.has(p.sub_id)) };
     const traded = card.querySelector("[data-traded]");
     if (traded) {
       traded.innerHTML = d.symbols.slice(0, 12).map(s => `<span class="chip btn ${s.symbol === d.symbol ? "on" : ""}" data-pick="${esc(s.symbol)}" title="${esc(s.symbol)} 체결 ${s.fills}건">${esc(s.name || s.symbol)}</span>`).join("");
@@ -521,7 +537,7 @@ W.chart = {
       ${d.last ? `<span>현재 ${esc(fmt(d.last, d.currency === "USD" ? 2 : 0))}</span>` : ""}
       <span class="muted">${esc(d.interval === "1d" ? "일봉" : d.date + " " + d.interval)}</span>
       <span class="chart-info mono muted"></span></div>`;
-    const c = candleChart(d, { width: widthOf(body) });
+    const c = candleChart(d, { width: widthOf(body), multiApp: appList.length > 1 });
     if (!c) {
       body.innerHTML = head + `<div class="empty">${d.error ? `<span class="error">${esc(d.error)}</span>` : "봉 없음 (휴장이거나 장 시작 전)"}</div>`;
       return;
@@ -535,9 +551,16 @@ W.chart = {
       { label: "실현손익", num: true, html: m => m.side === "sell" ? signed(m.pnl, d.currency) : "" },
     ], d.markers.slice().reverse(), { empty: "이 구간 체결 없음", rowAttrs: m => m.order_id ? `class="click" data-order="${m.order_id}"` : "" });
     body.innerHTML = head + (d.error ? `<div class="error">${esc(d.error)}</div>` : "") + c.html +
-      `<div class="legend"><span class="up">▲ 매수</span><span class="down">▼ 매도</span><span class="warn">--- 평균단가</span><span>체결 ${d.markers.length}건</span></div>
+      `<div class="legend">${c.multi ? "<span>▲ 매수</span><span>▼ 매도</span><span>--- 평균단가</span>" : '<span class="up">▲ 매수</span><span class="down">▼ 매도</span><span class="warn">--- 평균단가</span>'}
+        <span>체결 ${d.markers.length}건</span>${appList.length > 1 ? `<span class="chips">${appList.map(a =>
+          `<span class="chip btn ${spec.hide.has(a.id) ? "" : "on"}" data-app="${a.id}" title="눌러서 이 앱 표시 켜기/끄기"><i style="background:${c.multi ? subColor(a.id) : "var(--muted)"}"></i>${esc(a.name)}</span>`).join("")}</span>` : ""}</div>
        <details style="margin-top:6px"><summary>체결 목록</summary>${fills}</details>`;
     body.querySelectorAll("[data-order]").forEach(el => el.addEventListener("click", () => { if (el.dataset.order) openOrder(el.dataset.order); }));
+    body.querySelectorAll("[data-app]").forEach(el => el.addEventListener("click", () => {
+      const id = Number(el.dataset.app);
+      if (spec.hide.has(id)) spec.hide.delete(id); else spec.hide.add(id);
+      W.chart.render(body, full, spec, card);
+    }));
     const svg = body.querySelector("svg"), info = body.querySelector(".chart-info"), xh = svg.querySelector(".xhair");
     const fy = v => fmt(v, d.currency === "USD" ? 2 : 0);
     svg.querySelector(".hover").addEventListener("mousemove", e => {
