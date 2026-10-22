@@ -10,15 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import inspect
 import json
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -26,8 +28,11 @@ from sqlalchemy import func, select
 
 from central.api.common import ApiError, ok
 from central.app import CentralApp
+from central.broker.base import BrokerUnavailable
 from central.core import logbuffer
+from central.core.market_hours import KST, NEW_YORK
 from central.core.money import ZERO, q_cash
+from central.marketdata.candles import MINUTE_INTERVALS
 from central.oms import queries
 from central.oms.accounts import SubAccount
 from central.oms.errors import OmsError
@@ -169,6 +174,8 @@ class PageSpec(BaseModel):
     model_config = {"extra": "forbid"}
     id: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
     title: str = Field(min_length=1, max_length=40)
+    # 페이지 상단 선택 칸. 고른 값은 이 페이지 모든 위젯의 params 로 들어간다 (위젯 params 보다 우선)
+    vars: list[Literal["sub", "date", "symbol"]] = Field(default_factory=list)
     widgets: list[WidgetSpec] = Field(max_length=30)
 
 
@@ -184,7 +191,12 @@ def _default_layout(viewer: Viewer) -> dict:
             {"type": "pnl_curve", "w": 7}, {"type": "positions", "w": 5}]},
         {"id": "blotter", "title": "블로터", "widgets": [{"type": "blotter", "w": 12, "params": {"limit": "300"}}]},
         {"id": "pnl", "title": "손익", "widgets": [
-            {"type": "pnl_daily", "w": 12, "params": {"days": "30"}}, {"type": "positions", "w": 12}]},
+            {"type": "pnl_daily", "w": 12, "params": {"days": "30"}},
+            {"type": "symbols", "w": 12, "params": {"days": "30"}}, {"type": "positions", "w": 12}]},
+        {"id": "app", "title": "앱", "vars": ["sub", "date", "symbol"] if viewer.role == "admin" else ["date", "symbol"],
+         "widgets": [
+             {"type": "accounts", "w": 12}, {"type": "chart", "w": 8}, {"type": "symbols", "w": 4},
+             {"type": "pnl_curve", "w": 6}, {"type": "positions", "w": 6}, {"type": "blotter", "w": 12}]},
     ]
     if viewer.role == "admin":
         pages.append({"id": "system", "title": "시스템", "widgets": [
@@ -237,13 +249,16 @@ def layout_reset(request: Request):
 
 # ───────────── 위젯 데이터 ─────────────
 @router.get("/api/w/{wtype}")
-def widget_data(request: Request, wtype: str):
+async def widget_data(request: Request, wtype: str):
     viewer = _viewer(request)
     spec = WIDGETS.get(wtype)
     if spec is None or viewer.role not in spec["roles"]:
         raise OmsError("NOT_FOUND", f"위젯 {wtype} 없음")
     params = {k: v for k, v in request.query_params.items()}
-    return ok(spec["fn"](request.app.state.central, viewer, params))
+    fn, app = spec["fn"], request.app.state.central
+    if inspect.iscoroutinefunction(fn):
+        return ok(await fn(app, viewer, params))
+    return ok(await run_in_threadpool(fn, app, viewer, params))   # DB 조회가 이벤트 루프를 막지 않게
 
 
 @router.get("/api/orders/{order_id}")
@@ -601,6 +616,140 @@ def w_programs(app: CentralApp, viewer: Viewer, params: dict) -> dict:
     return {"supervisor": _programs(app)}
 
 
+def _session_window(market: str, day: date) -> tuple[datetime, datetime]:
+    """그 거래일 정규장 구간 (미국은 뉴욕 날짜 기준)."""
+    if market == "US":
+        return (datetime.combine(day, dtime(9, 30), NEW_YORK).astimezone(KST),
+                datetime.combine(day, dtime(16, 0), NEW_YORK).astimezone(KST))
+    return datetime.combine(day, dtime(9, 0), KST), datetime.combine(day, dtime(15, 30, 59), KST)
+
+
+CHART_INTERVALS = ("1m", "5m", "15m", "30m", "60m", "1d")
+_CHART_TTL_LIVE_S, _CHART_TTL_PAST_S, _CHART_TTL_ERROR_S = 20.0, 600.0, 10.0
+
+
+class ChartCache:
+    """화면 갱신이 KIS 호출 한도(주문과 같은 한도)를 먹지 않게 봉 조회를 짧게 캐시한다."""
+
+    def __init__(self, max_items: int = 200) -> None:
+        self.items: dict[tuple, tuple[float, list, str | None]] = {}
+        self.max_items = max_items
+
+    async def get(self, app: CentralApp, inst, interval: str, start: datetime, end: datetime,
+                  live: bool) -> tuple[list, str | None]:
+        key = (inst.id, interval, start, end)
+        now = time.monotonic()
+        hit = self.items.get(key)
+        if hit and hit[0] > now:
+            return hit[1], hit[2]
+        try:
+            bars, err = (await app.candles.get(inst, interval, start, end)).candles, None
+        except (BrokerUnavailable, OmsError) as e:
+            bars, err = [], str(e)
+        if len(self.items) >= self.max_items:
+            self.items = {k: v for k, v in self.items.items() if v[0] > now}
+            while len(self.items) >= self.max_items:
+                self.items.pop(next(iter(self.items)))
+        ttl = _CHART_TTL_ERROR_S if err else _CHART_TTL_LIVE_S if live else _CHART_TTL_PAST_S
+        self.items[key] = (now + ttl, bars, err)
+        return bars, err
+
+
+def _traded_symbols(app: CentralApp, sub_ids: list[int], start: datetime, end: datetime) -> list[dict]:
+    with app.db.session() as s:
+        q = (select(FillRow.instrument_id, func.max(FillRow.filled_at), func.count())
+             .where(FillRow.sub_account_id.in_(sub_ids), FillRow.filled_at >= start, FillRow.filled_at <= end)
+             .group_by(FillRow.instrument_id))
+        rows = sorted(s.execute(q), key=lambda r: r[1], reverse=True)
+    return [{"symbol": sym, "name": _name(app, sym), "fills": n, "last": queries.kst(last)} for sym, last, n in rows]
+
+
+async def w_chart(app: CentralApp, viewer: Viewer, params: dict) -> dict:
+    day = _day(app, params)
+    interval = params.get("interval") or "1m"
+    if interval not in CHART_INTERVALS:
+        raise OmsError("INVALID_REQUEST", f"interval 은 {CHART_INTERVALS} 중 하나")
+    subs = _scope(app, viewer, params, include_system=viewer.role == "admin")
+    sub_ids = [x.id for x in subs]
+    # 미국장은 KST 날짜가 하루 걸치므로 전날부터 본다
+    traded = await run_in_threadpool(_traded_symbols, app, sub_ids, queries.day_start(day - timedelta(days=1)),
+                                     queries.day_end(day))
+    symbol = (params.get("symbol") or "").strip().upper()
+    if not symbol and traded:
+        symbol = traded[0]["symbol"]
+    out: dict[str, Any] = {"date": day, "interval": interval, "symbols": traded, "symbol": symbol or None,
+                           "candles": [], "markers": [], "positions": [], "error": None}
+    if not symbol:
+        return out
+    try:
+        inst = app.catalog.resolve(symbol)
+    except OmsError as e:
+        return {**out, "error": e.message}
+
+    if interval in MINUTE_INTERVALS:
+        start, end = _session_window(inst.market, day)
+    else:
+        start = queries.day_start(day - timedelta(days=_int(params, "days", 120, 5, 400)))
+        end = queries.day_end(day)
+    live = end >= app.clock() - timedelta(minutes=2)
+    cache: ChartCache = app.__dict__.setdefault("_ui_chart_cache", ChartCache())
+    bars, err = await cache.get(app, inst, interval, start, end, live)
+
+    def fills_and_positions():
+        names = _sub_names(app)
+        with app.db.session() as s:
+            q = (select(FillRow).where(FillRow.sub_account_id.in_(sub_ids), FillRow.instrument_id == inst.id,
+                                       FillRow.filled_at >= start, FillRow.filled_at <= end)
+                 .order_by(FillRow.filled_at, FillRow.id))
+            marks = [{"ts": queries.kst(f.filled_at), "side": f.side, "price": f.price, "qty": f.qty,
+                      "order_id": f.order_id, "sub": names.get(f.sub_account_id, "?"), "pnl": f.realized_pnl}
+                     for f in s.scalars(q)]
+        pos = [{"sub": names[x.id], "qty": p.qty, "avg_price": p.avg_price}
+               for x in subs for p in app.accounts.positions(x.id) if p.instrument_id == inst.id and p.qty]
+        return marks, pos
+
+    marks, pos = await run_in_threadpool(fills_and_positions)
+    return {**out, "symbol": inst.id, "name": inst.name or "", "currency": inst.currency, "error": err,
+            "last": app.market.last_price(inst.id),
+            "candles": [[b.ts, b.open, b.high, b.low, b.close, b.volume] for b in bars],
+            "markers": marks, "positions": pos}
+
+
+def w_symbols(app: CentralApp, viewer: Viewer, params: dict) -> dict:
+    """종목별 매매 요약. 실현손익은 매도 체결에 붙은 값(수수료, 세금 차감)."""
+    days = _int(params, "days", 1, 1, 365)
+    end_day = _day(app, params)
+    start_day = end_day - timedelta(days=days - 1)
+    subs = _scope(app, viewer, params, include_system=viewer.role == "admin")
+    names = _sub_names(app)
+    by: dict[tuple[int, str], dict] = {}
+    with app.db.session() as s:
+        q = (select(FillRow).where(FillRow.sub_account_id.in_([x.id for x in subs]),
+                                   FillRow.filled_at >= queries.day_start(start_day),
+                                   FillRow.filled_at <= queries.day_end(end_day))
+             .order_by(FillRow.filled_at, FillRow.id))
+        for f in s.scalars(q):
+            a = by.setdefault((f.sub_account_id, f.instrument_id), {
+                "sub_id": f.sub_account_id, "sub": names.get(f.sub_account_id, "?"), "symbol": f.instrument_id,
+                "name": _name(app, f.instrument_id), "currency": f.currency, "buy_qty": 0, "sell_qty": 0,
+                "buy_amount": ZERO, "sell_amount": ZERO, "pnl": ZERO, "fee": ZERO, "wins": 0, "losses": 0,
+                "last": None})
+            a["buy_qty" if f.side == "buy" else "sell_qty"] += f.qty
+            a["buy_amount" if f.side == "buy" else "sell_amount"] += f.price * f.qty
+            a["pnl"] += f.realized_pnl
+            a["fee"] += f.fee + f.tax
+            if f.side == "sell":
+                a["wins" if f.realized_pnl > 0 else "losses"] += 1
+            a["last"] = queries.kst(f.filled_at)
+    held = {(x.id, p.instrument_id): p.qty for x in subs for p in app.accounts.positions(x.id)}
+    rows = []
+    for (sid, sym), a in by.items():
+        sells = a["wins"] + a["losses"]
+        rows.append({**a, "held": held.get((sid, sym), 0), "win_rate": round(a["wins"] / sells, 3) if sells else None})
+    rows.sort(key=lambda r: r["last"], reverse=True)
+    return {"from": start_day, "to": end_day, "rows": rows}
+
+
 WIDGETS: dict[str, dict[str, Any]] = {
     "status": {"fn": w_status, "roles": ("admin", "sub"), "title": "상태", "refresh": 5,
                "params": {}},
@@ -615,6 +764,11 @@ WIDGETS: dict[str, dict[str, Any]] = {
                            "symbol": "KR:005930", "market": "KR/US", "limit": "최대 행 (기본 300)"}},
     "positions": {"fn": w_positions, "roles": ("admin", "sub"), "title": "보유 종목", "refresh": 10,
                   "params": {"broker": "paper/real", "sub": "서브계좌 id"}},
+    "chart": {"fn": w_chart, "roles": ("admin", "sub"), "title": "차트", "refresh": 15,
+              "params": {"symbol": "KR:005930 (비우면 최근 체결 종목)", "interval": "1m/5m/15m/30m/60m/1d",
+                         "date": "YYYY-MM-DD", "days": "일봉 기간 (기본 120)", "sub": "서브계좌 id"}},
+    "symbols": {"fn": w_symbols, "roles": ("admin", "sub"), "title": "종목별 매매", "refresh": 15,
+                "params": {"days": "기간 일수 (기본 1)", "date": "마지막 날", "sub": "서브계좌 id"}},
     "calls": {"fn": w_calls, "roles": ("admin",), "title": "KIS 호출", "refresh": 10, "params": {}},
     "errors": {"fn": w_errors, "roles": ("admin",), "title": "오류와 경고", "refresh": 15,
                "params": {"since": "today/start", "limit": "최근 목록 수 (기본 50)"}},

@@ -106,6 +106,23 @@ def test_bind_hosts_loopback_or_tailscale(tmp_path: Path, host: str, allowed: bo
             load_settings(tmp_path)
 
 
+async def test_client_allowlist(tmp_path: Path) -> None:
+    write_home(tmp_path, central=CENTRAL_TOML.replace(
+        'hosts = ["127.0.0.1"]', 'hosts = ["127.0.0.1", "100.108.29.2"]\nallowed_clients = ["100.75.105.86"]'))
+    settings = load_settings(tmp_path)
+    app = CentralApp(settings, db=Database.memory(), brokers={"real": SimBroker("real"), "paper": SimBroker("paper")})
+    api = create_app(app, manage_lifecycle=False)
+    for client, status in (("127.0.0.1", 200), ("100.75.105.86", 200), ("100.108.29.2", 200),
+                           ("100.70.83.57", 403), ("192.168.0.5", 403)):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api, client=(client, 5000)),
+                                     base_url=BASE) as c:
+            assert (await c.get("/health")).status_code == status, client
+    await app.http.aclose()
+    write_home(tmp_path, central=CENTRAL_TOML.replace('hosts = ["127.0.0.1"]', 'hosts = ["127.0.0.1"]\nallowed_clients = ["192.168.0.5"]'))
+    with pytest.raises(SettingsError, match="allowed_clients"):
+        load_settings(tmp_path)
+
+
 # ───────────── 인증 ─────────────
 async def test_admin_and_sub_auth(env: Env) -> None:
     assert (await env.http.get("/admin/broker-accounts")).status_code == 401

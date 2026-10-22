@@ -8,6 +8,7 @@ uvicorn 은 설정의 server.hosts (127.0.0.1, Tailscale IP) 각각에 소켓을
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import socket
 import sys
@@ -79,7 +80,42 @@ def create_app(central: CentralApp, *, manage_lifecycle: bool = True, bootstrap:
     for router in (admin.router, me.router, market.router, ws.router):
         api.include_router(router, prefix=API_PREFIX)
     ui.mount(api)
+    cfg = central.settings.server
+    if cfg.allowed_clients:
+        api.add_middleware(ClientAllowlist, allowed={*cfg.allowed_clients, *cfg.hosts})
     return api
+
+
+class ClientAllowlist:
+    """server.allowed_clients 에 없는 기기의 HTTP/WS 연결을 막는다 (루프백은 항상 허용)."""
+
+    def __init__(self, app, allowed: set[str]) -> None:
+        self.app = app
+        self.allowed = {ipaddress.ip_address(h) for h in allowed}
+
+    def _ok(self, scope) -> bool:
+        client = scope.get("client")
+        if not client:
+            return False
+        try:
+            ip = ipaddress.ip_address(client[0])
+        except ValueError:
+            return False
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        return ip.is_loopback or ip in self.allowed
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] in ("http", "websocket") and not self._ok(scope):
+            log.warning("허용 목록 밖 접속 거부: %s %s", scope.get("client"), scope.get("path"))
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+            else:
+                await send({"type": "http.response.start", "status": 403,
+                            "headers": [(b"content-type", b"text/plain; charset=utf-8")]})
+                await send({"type": "http.response.body", "body": b"forbidden"})
+            return
+        await self.app(scope, receive, send)
 
 
 def _sockets(hosts: list[str], port: int) -> list[socket.socket]:

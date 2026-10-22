@@ -5,6 +5,8 @@
 [server]
 # Tailscale IP(100.x.x.x)를 추가한다. 0.0.0.0 은 사용 금지.
 hosts = ["127.0.0.1"]
+# 접속을 허용할 Tailscale 기기 IP (비우면 Tailscale 기기 전체). 예: ["100.x.x.x"]
+allowed_clients = []
 port = 8700
 
 [logging]

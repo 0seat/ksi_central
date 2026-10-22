@@ -101,6 +101,8 @@ class Account(_Model):
 class ServerConfig(_Model):
     hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1"])
     port: int = Field(default=8700, ge=1, le=65535)
+    # 접속을 허용할 Tailscale 기기 IP. 비우면 Tailscale 대역 전체 허용. 서버 자신(루프백, hosts)은 항상 허용
+    allowed_clients: list[str] = Field(default_factory=list)
 
     @field_validator("hosts")
     @classmethod
@@ -114,6 +116,18 @@ class ServerConfig(_Model):
                 raise ValueError(f"IP 주소만 사용 (호스트 이름 불가): {h}") from None
             if not (ip.is_loopback or any(ip in net for net in _TAILSCALE_NETS if ip.version == net.version)):
                 raise ValueError(f"전체 인터페이스나 외부 주소 바인딩 금지: {h} (127.0.0.1 또는 Tailscale IP 만 사용)")
+        return v
+
+    @field_validator("allowed_clients")
+    @classmethod
+    def _tailscale_clients_only(cls, v: list[str]) -> list[str]:
+        for h in v:
+            try:
+                ip = ipaddress.ip_address(h)
+            except ValueError:
+                raise ValueError(f"IP 주소만 사용: {h}") from None
+            if not any(ip in net for net in _TAILSCALE_NETS if ip.version == net.version):
+                raise ValueError(f"Tailscale 주소만 허용 목록에 넣을 수 있음: {h}")
         return v
 
 

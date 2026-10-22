@@ -3,7 +3,7 @@
 "use strict";
 
 const $ = (sel, el = document) => el.querySelector(sel);
-const S = { me: null, layout: null, custom: false, page: null, timers: [], catalog: {} };
+const S = { me: null, layout: null, custom: false, page: null, timers: [], catalog: {}, vars: {}, widgets: [] };
 
 // ───────────── 공통 ─────────────
 async function api(path, opts = {}) {
@@ -164,6 +164,87 @@ function stackedBars(perKind, { height = 90, width = 800 } = {}) {
   return `${svgOpen(W, H)}${g}</svg><div class="legend">${legend}</div>`;
 }
 
+// 캔들: 국내 관례대로 양봉 빨강, 음봉 파랑. 체결은 체결가 위치에 매수 ▲(빨강), 매도 ▼(파랑)
+function candleChart(d, { width = 800, priceH = 260, volH = 56 } = {}) {
+  const daily = d.interval === "1d";
+  const bars = d.candles.map(c => ({ t: new Date(c[0]).getTime(), iso: c[0], o: num(c[1]), h: num(c[2]), l: num(c[3]), c: num(c[4]), v: num(c[5]) }));
+  if (!bars.length) return null;
+  const W = width, L = 6, R = 66, T = 8, GAP = 18, B = 20;
+  const H = T + priceH + GAP + volH + B;
+  const n = bars.length, slot = (W - L - R) / n, bw = Math.max(1, Math.min(14, slot * 0.7));
+  const X = i => L + slot * (i + 0.5);
+
+  // 체결을 봉에 붙인다 (봉 시작 시각 <= 체결 시각인 마지막 봉). 같은 봉, 같은 방향은 하나로 묶는다
+  const idxOf = t => {
+    let lo = 0, hi = n - 1, ans = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (bars[m].t <= t) { ans = m; lo = m + 1; } else hi = m - 1; }
+    return ans;
+  };
+  const groups = {};
+  d.markers.forEach(m => {
+    const i = idxOf(new Date(m.ts).getTime());
+    if (i < 0) return;
+    const k = `${i}:${m.side}`;
+    const g = groups[k] || (groups[k] = { i, side: m.side, qty: 0, amount: 0, pnl: 0, items: [] });
+    g.qty += m.qty; g.amount += num(m.price) * m.qty; g.pnl += num(m.pnl); g.items.push(m);
+  });
+  const marks = Object.values(groups).map(g => ({ ...g, price: g.amount / g.qty }));
+  const avgs = d.positions.map(p => ({ sub: p.sub, price: num(p.avg_price) }));
+  const last = num(d.last);
+
+  const ys = bars.flatMap(b => [b.h, b.l]).concat(marks.map(m => m.price), avgs.map(a => a.price));
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (y0 === y1) { y0 -= 1; y1 += 1; }
+  const pad = (y1 - y0) * 0.06; y0 -= pad; y1 += pad;
+  const Y = y => T + (1 - (y - y0) / (y1 - y0)) * priceH;
+  const vmax = Math.max(1, ...bars.map(b => b.v));
+  const vTop = T + priceH + GAP;
+  const VY = v => vTop + volH - v / vmax * volH;
+  const fy = v => fmt(v, d.currency === "USD" ? 2 : 0);
+
+  let g = "";
+  niceTicks(y0, y1, 5).forEach(v => {
+    if (v < y0 || v > y1) return;
+    if (last !== null && Math.abs(Y(v) - Y(last)) < 14) return;   // 현재가 표시와 겹치는 눈금은 뺀다
+    g += `<line class="grid-line" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${W - R + 6}" y="${Y(v) + 4}">${esc(fy(v))}</text>`;
+  });
+  g += `<line class="grid-line" x1="${L}" x2="${W - R}" y1="${vTop + volH}" y2="${vTop + volH}"/>`;
+  g += `<text x="${W - R + 6}" y="${vTop + 9}">${esc(fmt(vmax, 0))}</text>`;
+  const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor((W - L - R) / 70))));
+  for (let i = 0; i < n; i += every) {
+    if (X(i) < 18) continue;   // 왼쪽 끝에서 잘리는 글자는 뺀다
+    const label = daily ? bars[i].iso.slice(5, 10).replace("-", "/") : bars[i].iso.slice(11, 16);
+    g += `<text x="${X(i)}" y="${H - 5}" text-anchor="middle">${label}</text>`;
+  }
+  bars.forEach((b, i) => {
+    const col = b.c >= b.o ? "var(--up)" : "var(--down)";
+    const top = Y(Math.max(b.o, b.c)), h = Math.max(1, Math.abs(Y(b.o) - Y(b.c)));
+    g += `<line x1="${X(i)}" x2="${X(i)}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${col}"/>`;
+    g += `<rect x="${X(i) - bw / 2}" y="${top}" width="${bw}" height="${h}" fill="${col}"/>`;
+    g += `<rect x="${X(i) - bw / 2}" y="${VY(b.v)}" width="${bw}" height="${vTop + volH - VY(b.v)}" fill="${col}" opacity=".45"/>`;
+  });
+  avgs.forEach(a => {
+    g += `<line x1="${L}" x2="${W - R}" y1="${Y(a.price)}" y2="${Y(a.price)}" stroke="var(--warn)" stroke-dasharray="5 4"/>`;
+    g += `<text x="${L + 4}" y="${Y(a.price) - 4}" style="fill:var(--warn)">평단 ${esc(a.sub)} ${esc(fy(a.price))}</text>`;
+  });
+  if (last !== null && last >= y0 && last <= y1) {
+    g += `<line x1="${L}" x2="${W - R}" y1="${Y(last)}" y2="${Y(last)}" stroke="var(--muted)" stroke-dasharray="1 3"/>`;
+    g += `<rect x="${W - R + 2}" y="${Y(last) - 8}" width="${R - 4}" height="16" rx="3" fill="var(--text)"/>`;
+    g += `<text x="${W - R + 6}" y="${Y(last) + 4}" style="fill:var(--card)">${esc(fy(last))}</text>`;
+  }
+  marks.forEach(m => {
+    const x = X(m.i), y = Y(m.price), s = 7;
+    const buy = m.side === "buy";
+    const path = buy ? `M${x},${y} l${-s},${s * 1.6} h${2 * s} z` : `M${x},${y} l${-s},${-s * 1.6} h${2 * s} z`;
+    const tip = `${buy ? "매수" : "매도"} ${fmt(m.qty)}주 @ ${fy(m.price)} (${m.items.length}건, ${[...new Set(m.items.map(x => x.sub))].join(", ")})` +
+      `\n${m.items.map(x => `${hms(x.ts)} #${x.order_id ?? "-"} ${fmt(x.qty)} @ ${fy(x.price)}${!buy ? ` 손익 ${fmt(x.pnl)}` : ""}`).join("\n")}`;
+    g += `<path class="mark" d="${path}" fill="${buy ? "var(--up)" : "var(--down)"}" stroke="var(--card)" stroke-width="1" data-order="${m.items[m.items.length - 1].order_id ?? ""}"><title>${esc(tip)}</title></path>`;
+  });
+  g += `<line class="xhair" x1="0" x2="0" y1="${T}" y2="${vTop + volH}" stroke="var(--muted)" stroke-dasharray="2 2" visibility="hidden"/>`;
+  g += `<rect class="hover" x="${L}" y="${T}" width="${W - L - R}" height="${vTop + volH - T}" fill="transparent"/>`;
+  return { html: `${svgOpen(W, H)}${g}</svg>`, bars, X, slot, L, daily };
+}
+
 // ───────────── 위젯 ─────────────
 const W = {};
 
@@ -253,7 +334,8 @@ W.blotter = {
   controls(card, spec, refresh) {
     const f = document.createElement("div");
     f.className = "filters";
-    const subs = S.me.role === "admin" ? `<select data-k="sub"><option value="">전체 서브계좌</option>${S.me.subs.map(s =>
+    const pageSub = (currentPage().vars || []).includes("sub");
+    const subs = S.me.role === "admin" && !pageSub ? `<select data-k="sub"><option value="">전체 서브계좌</option>${S.me.subs.map(s =>
       `<option value="${s.id}">${esc(s.name)} #${s.id}</option>`).join("")}</select>` : "";
     f.innerHTML = `<input type="date" data-k="date">${subs}
       <select data-k="status"><option value="">전체 상태</option><option value="FILLED,PARTIALLY_FILLED">체결</option>
@@ -273,13 +355,13 @@ W.blotter = {
     const c = card.querySelector("[data-counts]");
     if (c) c.innerHTML = counts;
     const dateInput = card.querySelector('[data-k="date"]');
-    if (dateInput && !dateInput.value) dateInput.value = d.date;
+    if (dateInput && !spec.live.date) dateInput.value = d.date;   // 페이지 날짜를 바꾸면 따라간다
     body.classList.add("flush");
     body.innerHTML = table([
       { label: "시각", html: r => `<span class="mono">${hms(r.ts)}</span>` },
       { label: "#", num: true, html: r => r.id },
       { label: "앱", html: r => esc(r.sub) },
-      { label: "종목", html: r => `${esc(r.name || r.symbol)} <span class="muted">${esc(r.symbol.split(":")[1] || "")}</span>` },
+      { label: "종목", html: r => symLink(r.symbol, r.name, r.symbol.split(":")[1] || "") },
       { label: "구분", html: r => SIDE_KO[r.side] || esc(r.side) },
       { label: "유형", html: r => r.type === "market" ? "시장가" : "지정가" },
       { label: "가격", num: true, html: r => r.price ? fmt(r.price) : "-" },
@@ -290,6 +372,7 @@ W.blotter = {
       { label: "사유", cls: "wrap", html: r => r.reason ? `<span class="error">${esc(r.reason)}</span>` : "" },
     ], d.rows, { tall: true, empty: "주문 없음", rowAttrs: r => `class="click" data-order="${r.id}"` });
     body.querySelectorAll("tr[data-order]").forEach(tr => tr.addEventListener("click", () => openOrder(tr.dataset.order)));
+    bindSymLinks(body);
   },
 };
 
@@ -298,13 +381,14 @@ W.positions = {
     body.classList.add("flush");
     body.innerHTML = table([
       { label: "앱", html: r => esc(r.sub) },
-      { label: "종목", html: r => `${esc(r.name || r.symbol)} <span class="muted">${esc(r.symbol)}</span>` },
+      { label: "종목", html: r => symLink(r.symbol, r.name, r.symbol) },
       { label: "수량", num: true, html: r => fmt(r.qty) + (r.sellable !== r.qty ? ` <span class="muted">(매도가능 ${fmt(r.sellable)})</span>` : "") },
       { label: "평균단가", num: true, html: r => fmt(r.avg_price) },
       { label: "현재가", num: true, html: r => r.last ? fmt(r.last) : '<span class="muted" title="실시간 시세 없음">-</span>' },
       { label: "평가손익", num: true, html: r => signed(r.unrealized, r.currency) },
       { label: "수익률", num: true, html: r => r.unrealized_rate === null ? "-" : `<span class="${r.unrealized_rate > 0 ? "up" : r.unrealized_rate < 0 ? "down" : ""}">${pct(r.unrealized_rate, 2)}</span>` },
     ], d.rows, { empty: "보유 종목 없음" });
+    bindSymLinks(body);
   },
 };
 
@@ -392,6 +476,104 @@ W.programs = {
   },
 };
 
+function symLink(symbol, name, code) {
+  return `<a href="#" class="sym" data-sym="${esc(symbol)}">${esc(name || symbol)}</a> <span class="muted">${esc(code)}</span>`;
+}
+function bindSymLinks(body) {
+  body.querySelectorAll("a.sym").forEach(a => a.addEventListener("click", e => {
+    e.preventDefault(); e.stopPropagation(); setSymbol(a.dataset.sym);
+  }));
+}
+
+W.chart = {
+  controls(card, spec, refresh) {
+    const f = document.createElement("div");
+    f.className = "filters";
+    const ivs = [["1m", "1분"], ["5m", "5분"], ["15m", "15분"], ["60m", "60분"], ["1d", "일"]];
+    const own = !currentPage().vars?.includes("symbol");
+    f.innerHTML = (own ? `<input data-sym placeholder="종목 (KR:005930)" size="14">` : "") +
+      `<span class="chips">${ivs.map(([v, t]) => `<span class="chip btn" data-iv="${v}">${t}</span>`).join("")}</span>
+       <span class="chips" data-traded></span>`;
+    const mark = () => {
+      const cur = spec.live.interval || spec.params.interval || "1m";
+      f.querySelectorAll("[data-iv]").forEach(c => c.classList.toggle("on", c.dataset.iv === cur));
+    };
+    f.querySelectorAll("[data-iv]").forEach(c => c.addEventListener("click", () => { spec.live.interval = c.dataset.iv; mark(); refresh(); }));
+    const input = f.querySelector("[data-sym]");
+    if (input) {
+      input.value = spec.params.symbol || "";
+      input.addEventListener("change", () => { spec.live.symbol = input.value.trim().toUpperCase(); refresh(); });
+    }
+    spec.pick = sym => {
+      if (own) { spec.live.symbol = sym; if (input) input.value = sym; refresh(); } else setVar("symbol", sym);
+    };
+    mark();
+    card.insertBefore(f, card.querySelector(".card-body"));
+  },
+  render(body, d, spec, card) {
+    const traded = card.querySelector("[data-traded]");
+    if (traded) {
+      traded.innerHTML = d.symbols.slice(0, 12).map(s => `<span class="chip btn ${s.symbol === d.symbol ? "on" : ""}" data-pick="${esc(s.symbol)}" title="${esc(s.symbol)} 체결 ${s.fills}건">${esc(s.name || s.symbol)}</span>`).join("");
+      traded.querySelectorAll("[data-pick]").forEach(c => c.addEventListener("click", () => spec.pick(c.dataset.pick)));
+    }
+    if (!d.symbol) { body.innerHTML = '<div class="empty">종목을 고르세요 (최근 이틀 체결 종목이 없음)</div>'; return; }
+    const head = `<div class="row chart-head"><b>${esc(d.name || d.symbol)}</b><span class="muted">${esc(d.symbol)}</span>
+      ${d.last ? `<span>현재 ${esc(fmt(d.last, d.currency === "USD" ? 2 : 0))}</span>` : ""}
+      <span class="muted">${esc(d.interval === "1d" ? "일봉" : d.date + " " + d.interval)}</span>
+      <span class="chart-info mono muted"></span></div>`;
+    const c = candleChart(d, { width: widthOf(body) });
+    if (!c) {
+      body.innerHTML = head + `<div class="empty">${d.error ? `<span class="error">${esc(d.error)}</span>` : "봉 없음 (휴장이거나 장 시작 전)"}</div>`;
+      return;
+    }
+    const fills = table([
+      { label: "시각", html: m => `<span class="mono">${hms(m.ts)}</span>` },
+      { label: "앱", html: m => esc(m.sub) },
+      { label: "구분", html: m => SIDE_KO[m.side] },
+      { label: "수량", num: true, html: m => fmt(m.qty) },
+      { label: "가격", num: true, html: m => fmt(m.price) },
+      { label: "실현손익", num: true, html: m => m.side === "sell" ? signed(m.pnl, d.currency) : "" },
+    ], d.markers.slice().reverse(), { empty: "이 구간 체결 없음", rowAttrs: m => m.order_id ? `class="click" data-order="${m.order_id}"` : "" });
+    body.innerHTML = head + (d.error ? `<div class="error">${esc(d.error)}</div>` : "") + c.html +
+      `<div class="legend"><span class="up">▲ 매수</span><span class="down">▼ 매도</span><span class="warn">--- 평균단가</span><span>체결 ${d.markers.length}건</span></div>
+       <details style="margin-top:6px"><summary>체결 목록</summary>${fills}</details>`;
+    body.querySelectorAll("[data-order]").forEach(el => el.addEventListener("click", () => { if (el.dataset.order) openOrder(el.dataset.order); }));
+    const svg = body.querySelector("svg"), info = body.querySelector(".chart-info"), xh = svg.querySelector(".xhair");
+    const fy = v => fmt(v, d.currency === "USD" ? 2 : 0);
+    svg.querySelector(".hover").addEventListener("mousemove", e => {
+      const box = svg.getBoundingClientRect();
+      const x = (e.clientX - box.left) * (svg.viewBox.baseVal.width / box.width);
+      const i = Math.max(0, Math.min(c.bars.length - 1, Math.floor((x - c.L) / c.slot)));
+      const b = c.bars[i];
+      xh.setAttribute("x1", c.X(i)); xh.setAttribute("x2", c.X(i)); xh.setAttribute("visibility", "visible");
+      const chg = i > 0 ? (b.c - c.bars[i - 1].c) / c.bars[i - 1].c : null;
+      info.innerHTML = `${c.daily ? b.iso.slice(0, 10) : b.iso.slice(11, 16)} 시 ${fy(b.o)} 고 ${fy(b.h)} 저 ${fy(b.l)} 종 ${fy(b.c)}` +
+        (chg !== null ? ` <span class="${chg > 0 ? "up" : chg < 0 ? "down" : ""}">${chg > 0 ? "+" : ""}${(chg * 100).toFixed(2)}%</span>` : "") + ` 량 ${fmt(b.v, 0)}`;
+    });
+    svg.querySelector(".hover").addEventListener("mouseleave", () => { xh.setAttribute("visibility", "hidden"); info.textContent = ""; });
+  },
+};
+
+W.symbols = {
+  render(body, d) {
+    body.classList.add("flush");
+    const many = new Set(d.rows.map(r => r.sub_id)).size > 1;
+    const cols = [
+      { label: "종목", html: r => symLink(r.symbol, r.name, "") },
+      { label: "매수/매도", num: true, html: r => `${fmt(r.buy_qty)} / ${fmt(r.sell_qty)}` },
+      { label: "보유", num: true, html: r => r.held ? fmt(r.held) : '<span class="muted">0</span>' },
+      { label: "실현손익", num: true, html: r => signed(r.pnl, r.currency) },
+      { label: "승/패", num: true, html: r => `${r.wins}/${r.losses}` },
+      { label: "비용", num: true, html: r => money(r.fee, r.currency) },
+      { label: "마지막", html: r => `<span class="mono">${d.from === d.to ? hms(r.last) : dt(r.last)}</span>` },
+    ];
+    if (many) cols.unshift({ label: "앱", html: r => esc(r.sub) });
+    body.innerHTML = `<div class="muted" style="padding:6px 12px">${esc(d.from === d.to ? d.to : d.from + " ~ " + d.to)} · 실현손익은 수수료, 세금 차감</div>` +
+      table(cols, d.rows, { tall: true, empty: "체결 없음" });
+    bindSymLinks(body);
+  },
+};
+
 // ───────────── 주문 상세 ─────────────
 async function openOrder(id) {
   openModal(`주문 #${id}`, '<div class="muted">불러오는 중</div>');
@@ -474,13 +656,70 @@ function renderTabs() {
   $("#tabs").innerHTML = S.layout.pages.map(p => `<a href="#${encodeURIComponent(p.id)}" class="${p.id === cur ? "active" : ""}">${esc(p.title)}</a>`).join("");
 }
 
+function currentPage() { return S.layout.pages.find(p => p.id === currentPageId()); }
+
+function pageVars() {
+  const page = currentPage();
+  const vals = S.vars[page.id] || {};
+  const out = {};
+  (page.vars || []).forEach(k => { if (vals[k]) out[k] = vals[k]; });
+  return out;
+}
+
+function saveVars() { try { localStorage.setItem("cs_ui_vars", JSON.stringify(S.vars)); } catch (_) { /* 저장 불가 */ } }
+function loadVars() { try { S.vars = JSON.parse(localStorage.getItem("cs_ui_vars") || "{}") || {}; } catch (_) { S.vars = {}; } }
+
+function setVar(k, v) {
+  const page = currentPage();
+  (S.vars[page.id] = S.vars[page.id] || {})[k] = v;
+  saveVars();
+  renderBar(page);
+  S.widgets.forEach(r => r());
+}
+
+// 종목 링크: 이 페이지에 종목 선택 칸이 있으면 거기에, 없으면 종목 칸이 있는 첫 페이지로 이동
+function setSymbol(sym) {
+  const page = currentPage();
+  if ((page.vars || []).includes("symbol")) { setVar("symbol", sym); return; }
+  const target = S.layout.pages.find(p => (p.vars || []).includes("symbol"));
+  if (!target) return;
+  (S.vars[target.id] = S.vars[target.id] || {}).symbol = sym;
+  saveVars();
+  location.hash = encodeURIComponent(target.id);
+}
+
+function renderBar(page) {
+  const bar = $("#pagebar");
+  const vars = page.vars || [];
+  bar.hidden = !vars.length;
+  if (!vars.length) { bar.innerHTML = ""; return; }
+  const v = S.vars[page.id] || {};
+  const parts = vars.map(k => {
+    if (k === "sub") return `<label>앱 <select data-var="sub"><option value="">전체</option>${S.me.subs.map(s =>
+      `<option value="${s.id}" ${String(v.sub) === String(s.id) ? "selected" : ""}>${esc(s.type === "system" ? "미배정(" + s.broker + ")" : s.name)} #${s.id}</option>`).join("")}</select></label>`;
+    if (k === "date") return `<label>날짜 <input type="date" data-var="date" value="${esc(v.date || "")}"></label>`;
+    if (k === "symbol") return `<label>종목 <input data-var="symbol" placeholder="비우면 최근 체결" size="14" value="${esc(v.symbol || "")}"></label>`;
+    return "";
+  }).join("");
+  const any = vars.some(k => v[k]);
+  bar.innerHTML = parts + (any ? '<button class="ghost" data-clear>초기화</button>' : "");
+  bar.querySelectorAll("[data-var]").forEach(el => el.addEventListener("change", () => {
+    setVar(el.dataset.var, el.dataset.var === "symbol" ? el.value.trim().toUpperCase() : el.value);
+  }));
+  const clear = bar.querySelector("[data-clear]");
+  if (clear) clear.onclick = () => { S.vars[page.id] = {}; saveVars(); renderPage(); };
+}
+
 function renderPage() {
   stopTimers();
-  const page = S.layout.pages.find(p => p.id === currentPageId());
+  S.widgets = [];
+  const page = currentPage();
+  renderBar(page);
   const root = $("#page");
   root.innerHTML = "";
   page.widgets.forEach(spec => mountWidget(root, { ...spec, params: spec.params || {}, live: {} }));
 }
+
 
 function mountWidget(root, spec) {
   const meta = S.catalog[spec.type];
@@ -494,14 +733,15 @@ function mountWidget(root, spec) {
   const stamp = card.querySelector(".stamp");
   if (!meta || !impl) { body.innerHTML = `<div class="error">알 수 없는 위젯 ${esc(spec.type)}</div>`; return; }
 
-  let timer = null, busy = false;
+  let timer = null, busy = false, again = false;
   const refresh = async () => {
-    if (busy) return;
+    if (busy) { again = true; return; }   // 갱신 중에 조건이 바뀌면 끝난 뒤 한 번 더
     busy = true;
+    again = false;
     clearTimeout(timer);
     try {
       const q = new URLSearchParams();
-      Object.entries({ ...spec.params, ...spec.live }).forEach(([k, v]) => { if (v !== "" && v !== null && v !== undefined) q.set(k, v); });
+      Object.entries({ ...spec.params, ...pageVars(), ...spec.live }).forEach(([k, v]) => { if (v !== "" && v !== null && v !== undefined) q.set(k, v); });
       const data = await api(`/w/${spec.type}${q.toString() ? "?" + q : ""}`);
       impl.render(body, data, spec, card);
       stamp.textContent = new Date().toTimeString().slice(0, 8);
@@ -513,6 +753,7 @@ function mountWidget(root, spec) {
       if (!body.innerHTML) body.innerHTML = `<div class="error">${esc(e.message)}</div>`;
     } finally {
       busy = false;
+      if (again && S.me) { refresh(); return; }
       if (S.me) {
         timer = setTimeout(tick, Math.max(3, meta.refresh) * 1000);
         S.timers.push(timer);
@@ -521,6 +762,7 @@ function mountWidget(root, spec) {
   };
   const tick = () => { if (document.hidden) { timer = setTimeout(tick, 2000); S.timers.push(timer); } else refresh(); };
   if (impl.controls) impl.controls(card, spec, refresh);
+  S.widgets.push(refresh);
   refresh();
 }
 
@@ -539,6 +781,7 @@ async function boot() {
     S.me = await api("/me");
   } catch (_) { return; }
   S.catalog = Object.fromEntries(S.me.widgets.map(w => [w.type, w]));
+  loadVars();
   $("#login").hidden = true;
   $("#shell").hidden = false;
   $("#who").textContent = S.me.role === "admin" ? "관리자" : S.me.name;

@@ -134,7 +134,8 @@ async def test_sub_scope(env: Env) -> None:
         assert me == {"role": "sub", "name": "A"}
         me = await data(c, "/api/me")
         assert [s["id"] for s in me["subs"]] == [a_id]
-        assert {w["type"] for w in me["widgets"]} == {"status", "accounts", "pnl_curve", "pnl_daily", "blotter", "positions"}
+        assert {w["type"] for w in me["widgets"]} == {"status", "accounts", "pnl_curve", "pnl_daily", "blotter", "positions",
+                                                    "chart", "symbols"}
 
         for w in ("calls", "errors", "jobs", "programs"):
             assert (await c.get(f"/api/w/{w}")).status_code == 404
@@ -156,7 +157,7 @@ async def test_layout_save_and_reset(env: Env) -> None:
         await login(c, a_key)
         await login(other, ADMIN_KEY)
         d = await data(c, "/api/layout")
-        assert not d["custom"] and [p["id"] for p in d["layout"]["pages"]] == ["overview", "blotter", "pnl"]
+        assert not d["custom"] and [p["id"] for p in d["layout"]["pages"]] == ["overview", "blotter", "pnl", "app"]
         assert "system" in [p["id"] for p in (await data(other, "/api/layout"))["layout"]["pages"]]
 
         mine = {"pages": [{"id": "main", "title": "내 화면", "widgets": [
@@ -216,3 +217,50 @@ def test_log_buffer_masks_and_groups() -> None:
         assert groups[0]["count"] == 2 and groups[0]["message"].startswith("재연결 대기 2초")
     finally:
         masker.clear()
+
+
+def _bars(n: int = 61) -> list:
+    from datetime import datetime, timedelta
+
+    from central.broker.base import Candle
+    from central.core.market_hours import KST
+    t0 = datetime(2026, 10, 14, 9, 0, tzinfo=KST)
+    return [Candle(t0 + timedelta(minutes=i), D(61000 + i), D(61100 + i), D(60900 + i), D(61050 + i), 100 + i)
+            for i in range(n)]
+
+
+async def test_chart_and_symbols(env: Env) -> None:
+    a_id, a_key, b_id, _ = await trade(env)
+    for sim in (env.sim, env.paper):
+        sim.candles[("KR:005930", "1m")] = _bars()
+    async with browser(env) as c:
+        await login(c, ADMIN_KEY)
+        d = await data(c, "/api/w/chart")                                  # 종목 생략 → 최근 체결 종목
+        assert d["symbol"] == "KR:005930" and d["error"] is None and d["symbols"][0]["fills"] == 2
+        assert len(d["candles"]) == 61 and d["candles"][0][0].startswith("2026-10-14T09:00")
+        assert [(m["side"], m["qty"]) for m in d["markers"]] == [("buy", 10), ("sell", 5)]
+        assert [(p["sub"], p["qty"], D(p["avg_price"])) for p in d["positions"]] == [("A", 5, D("61000"))]
+        calls = env.sim.candle_calls + env.paper.candle_calls
+        await data(c, "/api/w/chart", symbol="KR:005930")                  # 짧은 캐시: KIS 를 다시 부르지 않는다
+        assert env.sim.candle_calls + env.paper.candle_calls == calls
+        five = await data(c, "/api/w/chart", symbol="KR:005930", interval="5m")
+        assert len(five["candles"]) == 13
+        assert (await c.get("/api/w/chart", params={"interval": "2m"})).status_code == 400
+        assert (await data(c, "/api/w/chart", sub=str(b_id)))["symbol"] is None   # B 는 체결 없음
+
+        sym = await data(c, "/api/w/symbols")
+        [row] = [r for r in sym["rows"] if r["sub_id"] == a_id]
+        assert (row["buy_qty"], row["sell_qty"], row["held"], row["pnl"], row["wins"]) == (10, 5, 5, "5000", 1)
+
+    async with browser(env) as c:
+        await login(c, a_key)
+        d = await data(c, "/api/w/chart", sub=str(b_id))                  # 다른 서브계좌 지정은 무시
+        assert {m["sub"] for m in d["markers"]} == {"A"}
+        assert {r["sub_id"] for r in (await data(c, "/api/w/symbols"))["rows"]} == {a_id}
+        layout = (await data(c, "/api/layout"))["layout"]
+        app_page = next(p for p in layout["pages"] if p["id"] == "app")
+        assert app_page["vars"] == ["date", "symbol"]
+        page = {"pages": [{"id": "x", "title": "x", "vars": ["symbol"], "widgets": [{"type": "chart"}]}]}
+        assert (await c.put("/api/layout", json=page)).json()["ok"]
+        page["pages"][0]["vars"] = ["nope"]
+        assert (await c.put("/api/layout", json=page)).status_code == 400

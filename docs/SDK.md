@@ -6,7 +6,7 @@
 
 - 서버 주소: `http://127.0.0.1:8700` (같은 PC) 또는 Tailscale IP. 모든 경로 앞에 `/api/v1`
 - 대화형 문서: `http://127.0.0.1:8700/api/v1/docs` (서버 실행 중)
-- 웹 대시보드: `http://127.0.0.1:8700/ui/` (서브계좌 API 키로 로그인하면 자기 주문, 체결, 손익, 보유 종목을 본다)
+- 웹 대시보드: `http://127.0.0.1:8700/ui/` (다른 기기에서는 `http://<서버 Tailscale IP>:8700/ui/`) (서브계좌 API 키로 로그인하면 자기 주문, 체결, 손익, 보유 종목을 본다)
 - 서버 코드 위치: `central/api/me.py`, `central/api/market.py`, `central/api/ws.py`, SDK 는 `sdk/central_client.py`
 - 프로그램은 저장소 밖 아무 폴더, 아무 언어여도 됩니다. HTTP 로 `X-API-Key` 헤더만 붙이면 됩니다.
   파이썬이면 SDK 를 쓰는 편이 편합니다. SDK 는 HTTP 호출을 감싼 라이브러리일 뿐 서버를 띄우지 않으며,
