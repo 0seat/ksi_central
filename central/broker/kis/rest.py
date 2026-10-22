@@ -12,6 +12,7 @@ import httpx
 
 from central.broker.kis.auth import KisAuth
 from central.broker.kis.tr import REST_BASE, Tr
+from central.core.callstats import CallStats, classify
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ class KisRestClient:
     auth: KisAuth
     http: httpx.AsyncClient
     limiter: RateLimiter = field(init=False)
+    stats: CallStats = field(init=False, default_factory=CallStats)
 
     def __post_init__(self) -> None:
         self.limiter = RateLimiter(self.auth.account.profile.rate_limit_per_sec)
@@ -116,12 +118,19 @@ class KisRestClient:
                 "custtype": "P",
                 "tr_cont": tr_cont,
             }
+            queued = time.monotonic()
             await self.limiter.acquire()
             started = time.monotonic()
-            if tr.method == "GET":
-                res = await self.http.get(url, headers=headers, params=params or {})
-            else:
-                res = await self.http.post(url, headers=headers, json=params or {})
+            wait_ms = (started - queued) * 1000
+            try:
+                if tr.method == "GET":
+                    res = await self.http.get(url, headers=headers, params=params or {})
+                else:
+                    res = await self.http.post(url, headers=headers, json=params or {})
+            except Exception:
+                self.stats.record(classify(tr.path, tr.method), tr_id, wait_ms,
+                                  (time.monotonic() - started) * 1000, False, False)
+                raise
             elapsed_ms = (time.monotonic() - started) * 1000
 
             try:
@@ -130,6 +139,8 @@ class KisRestClient:
                 body = {}
             msg_cd = str(body.get("msg_cd", ""))
             rt_cd = str(body.get("rt_cd", ""))
+            self.stats.record(classify(tr.path, tr.method), tr_id, wait_ms, elapsed_ms,
+                              res.status_code == 200 and rt_cd == "0", msg_cd == RATE_LIMIT_CODE)
 
             if msg_cd == RATE_LIMIT_CODE and rate_retries < MAX_RATE_RETRIES:
                 rate_retries += 1

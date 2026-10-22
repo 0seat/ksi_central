@@ -532,6 +532,15 @@ await cs.buy("US:AAPL", qty=3, price="187.25")
 async for tick in cs.stream("tick:US:AAPL"): ...
 ```
 
+### 8.7.1 웹 대시보드 (`/ui`)
+`central/api/ui.py`, 화면 파일은 `central/api/ui_static/` (빌드 없는 HTML/JS).
+- 로그인: 관리자 키 또는 서브계좌 API 키 → HttpOnly 세션 쿠키 (12시간, 서버 재시작 때 만료). 키는 URL 이나 브라우저 저장소에 남기지 않는다
+- 화면 = 위젯 배치(레이아웃 JSON, `ui_layouts` 테이블에 사용자별 저장). 기본 탭: 개요, 블로터, 손익, 시스템(관리자)
+- 위젯: `status`, `accounts`, `pnl_curve`, `pnl_daily`, `blotter`, `positions` (서브계좌 키는 자기 것만), `calls`, `errors`, `jobs`, `programs` (관리자만)
+- 조회 전용. 실계좌는 별칭(paper/real)으로만 표시하고 계좌번호와 키는 내보내지 않는다
+- KIS 호출 통계(`central/core/callstats.py`, 최근 1시간)와 WARNING 이상 로그(`central/core/logbuffer.py`, 마스킹 적용)는 메모리에만 두고 재시작 때 비운다
+- 앱이 보내는 맞춤 값(`cs.plot`, `cs.log`, `cs.state`)과 캔들 차트는 다음 단계
+
 ### 8.8 네트워크 보안 (Tailscale)
 - uvicorn은 Tailscale IP(100.x)와 `127.0.0.1`에만 바인딩한다. `0.0.0.0` 금지
 - Windows 방화벽은 API 포트를 Tailscale 인터페이스에서만 허용한다

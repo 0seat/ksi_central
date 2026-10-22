@@ -118,6 +118,9 @@ class KisBroker(Broker):
             "realtime": self.session.health(),
         }
 
+    def call_stats(self) -> dict | None:
+        return self.rest.stats.snapshot()
+
     async def _on_notice(self, msg: RealtimeMessage) -> None:
         market = self._notice_markets[msg.tr_id]
         parser = self._parsers[market]

@@ -260,3 +260,11 @@ class HistorySubscriptionRow(Base):
     symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
     owner: Mapped[str] = mapped_column(String(32), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
+
+
+class UiLayoutRow(Base):
+    """대시보드 레이아웃 (central/api/ui.py). owner: admin 또는 sub:<id>. layout: {"pages": [...]}"""
+    __tablename__ = "ui_layouts"
+    owner: Mapped[str] = mapped_column(String(32), primary_key=True)
+    layout: Mapped[dict[str, Any]] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)

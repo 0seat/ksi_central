@@ -171,6 +171,10 @@ class Broker(ABC):
         """관리자 상태 조회용 (비밀정보 제외)."""
         return {"connected": True}
 
+    def call_stats(self) -> dict | None:
+        """외부 API 호출 통계 (central/core/callstats.py). 없으면 None."""
+        return None
+
     @abstractmethod
     async def cancel(
         self, broker_order_no: str, broker_org_no: str, instrument: Instrument, qty: int, route: str | None = None

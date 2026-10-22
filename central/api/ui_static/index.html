@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>중앙증권 대시보드</title>
+<link rel="stylesheet" href="/ui/static/style.css">
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form id="login-form" class="login-card" autocomplete="off">
+    <h1>중앙증권</h1>
+    <p class="muted">관리자 키 또는 서브계좌 API 키로 로그인합니다. 키는 브라우저에 저장하지 않습니다.</p>
+    <input id="login-key" type="password" placeholder="키" autocomplete="off" required>
+    <button type="submit">로그인</button>
+    <p id="login-error" class="error" hidden></p>
+  </form>
+</div>
+
+<div id="shell" hidden>
+  <header class="top">
+    <div class="brand">중앙증권</div>
+    <nav id="tabs" class="tabs"></nav>
+    <div class="top-right">
+      <span id="clock" class="muted mono"></span>
+      <span id="who" class="who"></span>
+      <button id="btn-edit" class="ghost">레이아웃</button>
+      <button id="btn-logout" class="ghost">로그아웃</button>
+    </div>
+  </header>
+  <main id="page" class="grid"></main>
+</div>
+
+<div id="modal" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><h2 id="modal-title"></h2><button id="modal-close" class="ghost">닫기</button></div>
+    <div id="modal-body" class="modal-body"></div>
+  </div>
+</div>
+
+<script src="/ui/static/app.js"></script>
+</body>
+</html>

@@ -17,7 +17,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 
-from central.api import admin, market, me, ws
+from central.api import admin, market, me, ui, ws
 from central.api.common import error_response, ok
 from central.app import CentralApp
 from central.oms.errors import OmsError
@@ -78,6 +78,7 @@ def create_app(central: CentralApp, *, manage_lifecycle: bool = True, bootstrap:
 
     for router in (admin.router, me.router, market.router, ws.router):
         api.include_router(router, prefix=API_PREFIX)
+    ui.mount(api)
     return api
 
 
