@@ -147,9 +147,10 @@ function barChart(items, { height = 160, fmtY = v => fmt(v), signedColors = true
   return `${svgOpen(W, H)}${g}</svg>`;
 }
 
-function stackedBars(perKind, { height = 90, width = 800 } = {}) {
+function stackedBars(perKind, { height = 90, width = 800, colors = null, unit = "" } = {}) {
   const kinds = Object.keys(perKind);
   if (!kinds.length) return '<div class="empty">최근 1시간 호출 없음</div>';
+  const color = ki => (colors && colors[ki]) || PALETTE[ki % PALETTE.length];
   const n = perKind[kinds[0]].length;
   const totals = Array.from({ length: n }, (_, i) => kinds.reduce((a, k) => a + perKind[k][i], 0));
   const max = Math.max(1, ...totals);
@@ -162,11 +163,11 @@ function stackedBars(perKind, { height = 90, width = 800 } = {}) {
       if (!v) return;
       const h = v / max * (H - B - 4);
       y -= h;
-      g += `<rect x="${L + i * bw + 1}" y="${y}" width="${Math.max(1, bw - 2)}" height="${h}" fill="${PALETTE[ki % PALETTE.length]}"><title>${60 - i}분 전 ${esc(KIND_KO[k] || k)} ${v}</title></rect>`;
+      g += `<rect x="${L + i * bw + 1}" y="${y}" width="${Math.max(1, bw - 2)}" height="${h}" fill="${color(ki)}"><title>${60 - i}분 전 ${esc(KIND_KO[k] || k)} ${v}${unit}</title></rect>`;
     });
   }
   g += `<text x="${L}" y="${H - 3}">60분 전</text><text x="${W}" y="${H - 3}" text-anchor="end">지금</text>`;
-  const legend = kinds.map((k, i) => `<span><i style="background:${PALETTE[i % PALETTE.length]}"></i>${esc(KIND_KO[k] || k)}</span>`).join("");
+  const legend = kinds.map((k, i) => `<span><i style="background:${color(i)}"></i>${esc(KIND_KO[k] || k)}</span>`).join("");
   return `${svgOpen(W, H)}${g}</svg><div class="legend">${legend}</div>`;
 }
 
@@ -594,6 +595,62 @@ W.symbols = {
     body.innerHTML = `<div class="muted" style="padding:6px 12px">${esc(d.from === d.to ? d.to : d.from + " ~ " + d.to)} · 실현손익은 수수료, 세금 차감</div>` +
       table(cols, d.rows, { tall: true, empty: "체결 없음" });
     bindSymLinks(body);
+  },
+};
+
+const ENDPOINT_KO = {
+  rankings: "순위", flows: "수급", quote: "현재가", orderbook: "호가", candles: "캔들", history: "과거 봉", ticks: "체결 기록",
+  symbols: "종목", fx: "환율", calendar: "휴장일", status: "시장 상태", ranking_kinds: "순위 종류", flow_kinds: "수급 종류",
+  history_subscriptions: "과거 봉 구독", history_subscribe: "과거 봉 구독", history_unsubscribe: "과거 봉 구독 해제",
+  me: "내 정보", balance: "잔고", positions: "보유", ledger: "원장", pnl: "손익", place: "주문", order_list: "주문 조회",
+  order_get: "주문 조회", order_cancel: "취소", order_amend: "정정", cancel_all: "전체 취소", fill_list: "체결 조회",
+};
+// 서버 캐시나 실시간 수신값으로 답할 수 있는 시세 조회 (주문, 계좌 조회는 해당 없음)
+const CACHEABLE = new Set(["quote", "orderbook", "candles", "history", "rankings", "flows", "ticks", "fx", "calendar", "symbols", "status"]);
+function channelKo(c) {
+  const [kind, ...rest] = c.split(":");
+  const k = { tick: "체결", orderbook: "호가", "candle.1m": "1분봉" }[kind] || kind;
+  return `${k} ${rest.join(":")}`;
+}
+
+W.usage = {
+  render(body, d) {
+    if (!d.rows.length) {
+      body.innerHTML = '<div class="empty">최근 1시간 앱 요청과 실시간 연결 없음</div>';
+      return;
+    }
+    const sum = table([
+      { label: "앱", html: r => `<span class="dot" style="background:${subColor(r.sub_id)}"></span> <b>${esc(r.name)}</b>` },
+      { label: "요청 (1시간)", num: true, html: r => fmt(r.requests) },
+      { label: "분당", num: true, html: r => fmt(r.requests / 60, 1) },
+      { label: "KIS 호출", num: true, html: r => fmt(r.kis_calls) },
+      { label: "오류", num: true, html: r => r.errors ? `<span class="error">${r.errors}</span>` : "0" },
+      { label: "평균 응답", num: true, html: r => r.elapsed_avg_ms === null ? "-" : `${fmt(r.elapsed_avg_ms, 0)}ms` },
+      { label: "마지막 요청", num: true, html: r => r.last_at ? `${since(r.last_at)} 전` : "-" },
+      { label: "WS 연결", num: true, html: r => r.ws_connections ? `${r.ws_connections} <span class="muted">(${since(r.ws_since)})</span>` : '<span class="muted">0</span>' },
+      { label: "실시간 구독", num: true, html: r => fmt(r.channels.length) },
+    ], d.rows);
+    const perApp = {};
+    d.rows.forEach(r => { perApp[r.name] = r.per_minute; });
+    const chart = stackedBars(perApp, { width: widthOf(body), colors: d.rows.map(r => subColor(r.sub_id)), unit: "요청" });
+    const detail = d.rows.map(r => {
+      const eps = table([
+        { label: "요청 종류", html: e => `${esc(ENDPOINT_KO[e.name] || e.name)} <span class="muted mono">${esc(e.name)}</span>` },
+        { label: "요청", num: true, html: e => fmt(e.requests) },
+        { label: "KIS 호출", num: true, html: e => fmt(e.kis_calls) },
+        { label: "캐시 응답", num: true, html: e => e.requests && CACHEABLE.has(e.name) ? pct(Math.max(0, 1 - e.kis_calls / e.requests), 0) : "-" },
+        { label: "오류", num: true, html: e => e.errors ? `<span class="error">${e.errors}</span>` : "0" },
+      ], r.endpoints, { empty: "최근 1시간 요청 없음" });
+      const ch = r.channels.length
+        ? `<div class="chips" style="margin-top:6px">${r.channels.map(c => `<span class="chip">${esc(channelKo(c))}</span>`).join("")}</div>`
+        : '<div class="muted" style="margin-top:6px">실시간 구독 없음</div>';
+      return `<details style="margin-top:8px"><summary><b>${esc(r.name)}</b> 요청 종류 ${r.endpoints.length}개 · 구독 ${r.channels.length}개</summary>${eps}${ch}</details>`;
+    }).join("");
+    const server = d.kis_total_60m !== undefined
+      ? `<div class="muted" style="margin-top:8px">KIS 호출 1시간 합계 ${fmt(d.kis_total_60m)}건 중 앱 요청 몫 ${fmt(d.kis_total_60m - d.kis_server_60m)}건,
+          서버 자체 작업(대사, 동기화, 일정 작업, 대시보드 차트) ${fmt(d.kis_server_60m)}건</div>` : "";
+    body.innerHTML = sum + `<div style="margin-top:10px">${chart}</div>` + server + detail +
+      '<div class="muted" style="margin-top:6px">서버 재시작 때 비워짐. KIS 호출은 그 요청 처리 중 실제로 나간 것만 (캐시 응답은 0)</div>';
   },
 };
 

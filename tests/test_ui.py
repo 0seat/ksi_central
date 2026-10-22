@@ -135,7 +135,7 @@ async def test_sub_scope(env: Env) -> None:
         me = await data(c, "/api/me")
         assert [s["id"] for s in me["subs"]] == [a_id]
         assert {w["type"] for w in me["widgets"]} == {"status", "accounts", "pnl_curve", "pnl_daily", "blotter", "positions",
-                                                    "chart", "symbols"}
+                                                    "chart", "symbols", "usage"}
 
         for w in ("calls", "errors", "jobs", "programs"):
             assert (await c.get(f"/api/w/{w}")).status_code == 404
@@ -265,3 +265,44 @@ async def test_chart_and_symbols(env: Env) -> None:
         assert (await c.put("/api/layout", json=page)).json()["ok"]
         page["pages"][0]["vars"] = ["nope"]
         assert (await c.put("/api/layout", json=page)).status_code == 400
+
+
+async def test_usage_per_app(env: Env) -> None:
+    from central.core import appstats
+    a_id, a_key, b_id, b_key = await trade(env)
+    for sim in (env.sim, env.paper):            # KIS 호출 대신: 봉 조회 1페이지마다 KIS 1회로 센다
+        sim.candles[("KR:005930", "1m")] = _bars()
+        orig = sim.candle_page
+
+        async def counted(*a, _orig=orig, **k):
+            appstats.count_kis_call()
+            return await _orig(*a, **k)
+        sim.candle_page = counted
+    async with env.sdk(a_key) as cs:
+        await cs.candles("KR:005930", "1m", start="2026-10-14T09:00:00+09:00")
+        await cs.candles("KR:005930", "1m", start="2026-10-14T09:00:00+09:00")
+        await cs.positions()
+    sub_b = env.app.accounts.get(b_id)
+    conn = env.api.state.hub.add(sub_b)                 # B 는 실시간 구독만
+    conn.channels |= {"tick:KR:005930", "orderbook:KR:005930"}
+    appstats.count_kis_call()                           # 앱 요청 밖의 호출은 아무 앱에도 붙지 않는다
+
+    async with browser(env) as c:
+        await login(c, ADMIN_KEY)
+        d = await data(c, "/api/w/usage")
+        rows = {r["sub_id"]: r for r in d["rows"]}
+        a = rows[a_id]
+        eps = {e["name"]: e for e in a["endpoints"]}
+        assert eps["candles"]["requests"] == 2 and eps["positions"]["requests"] == 1
+        assert eps["candles"]["kis_calls"] >= 1 and eps["positions"]["kis_calls"] == 0
+        assert a["kis_calls"] == eps["candles"]["kis_calls"] and a["last_at"] and sum(a["per_minute"]) == a["requests"]
+        assert rows[b_id]["ws_connections"] == 1 and rows[b_id]["channels"] == ["orderbook:KR:005930", "tick:KR:005930"]
+        assert "kis_total_60m" in d
+        again = {r["sub_id"]: r for r in (await data(c, "/api/w/usage"))["rows"]}
+        assert again[a_id]["requests"] == a["requests"]                   # 대시보드 요청은 앱 사용량에 안 들어간다
+
+    async with browser(env) as c:
+        await login(c, b_key)
+        d = await data(c, "/api/w/usage")
+        assert [r["sub_id"] for r in d["rows"]] == [b_id] and "kis_total_60m" not in d
+    env.api.state.hub.remove(conn)

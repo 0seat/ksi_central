@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Header, Query, Request
 from pydantic import BaseModel
 
-from central.api.common import ApiError, App, ok
+from central.api.common import ApiError, App, ok, tag_request
 from central.broker.base import BrokerUnavailable
 from central.marketdata.candles import INTERVALS, MINUTE_INTERVALS
 from central.oms.errors import OmsError
@@ -26,8 +26,10 @@ def require_any(request: Request, x_api_key: Annotated[str | None, Header()] = N
     admin = app.settings.admin_key
     if x_admin_key and admin and hmac.compare_digest(x_admin_key.encode(), admin.get_secret_value().encode()):
         return
-    if app.apikeys.authenticate(x_api_key) is None:
+    sub = app.apikeys.authenticate(x_api_key)
+    if sub is None:
         raise ApiError("UNAUTHORIZED", "API 키가 없거나 올바르지 않음")
+    tag_request(sub)
 
 
 REALTIME_FRESH_SEC = 10

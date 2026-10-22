@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from central.api import admin, market, me, ui, ws
 from central.api.common import error_response, ok
 from central.app import CentralApp
+from central.core.appstats import AppStats, AppStatsMiddleware
 from central.oms.errors import OmsError
 
 log = logging.getLogger(__name__)
@@ -54,6 +55,8 @@ def create_app(central: CentralApp, *, manage_lifecycle: bool = True, bootstrap:
     )
     api.state.central = central
     api.state.hub = ws.EventHub()
+    api.state.app_stats = AppStats()
+    central.ws_hub, central.app_stats = api.state.hub, api.state.app_stats   # 대시보드 사용량 위젯이 읽는다
     central.bus.subscribe(api.state.hub.on_event)
     central.market.listeners.append(api.state.hub.on_market)
 
@@ -80,6 +83,7 @@ def create_app(central: CentralApp, *, manage_lifecycle: bool = True, bootstrap:
     for router in (admin.router, me.router, market.router, ws.router):
         api.include_router(router, prefix=API_PREFIX)
     ui.mount(api)
+    api.add_middleware(AppStatsMiddleware, stats=api.state.app_stats, prefix=API_PREFIX)
     cfg = central.settings.server
     if cfg.allowed_clients:
         api.add_middleware(ClientAllowlist, allowed={*cfg.allowed_clients, *cfg.hosts})

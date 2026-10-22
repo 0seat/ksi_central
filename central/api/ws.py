@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -40,6 +41,7 @@ class _Conn:
     queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(QUEUE_SIZE))
     overflow: asyncio.Event = field(default_factory=asyncio.Event)
     channels: set[str] = field(default_factory=set)   # 시세 채널
+    connected_at: float = field(default_factory=time.time)
 
 
 class EventHub:
@@ -59,6 +61,16 @@ class EventHub:
     @property
     def connections(self) -> int:
         return len(self._conns)
+
+    def snapshot(self) -> dict[int, dict]:
+        """서브계좌별 WebSocket 연결 수, 시세 채널, 가장 오래된 연결 시각."""
+        out: dict[int, dict] = {}
+        for c in list(self._conns):
+            a = out.setdefault(c.sub.id, {"connections": 0, "channels": set(), "since": c.connected_at})
+            a["connections"] += 1
+            a["channels"] |= c.channels
+            a["since"] = min(a["since"], c.connected_at)
+        return {k: {**v, "channels": sorted(v["channels"])} for k, v in out.items()}
 
     def on_event(self, e: Event) -> None:
         routed = self._route(e)

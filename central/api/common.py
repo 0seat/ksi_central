@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BeforeValidator
 
 from central.app import CentralApp
+from central.core import appstats
 from central.core.market_hours import KST
 from central.oms.accounts import SubAccount
 from central.oms.errors import OmsError
@@ -92,7 +93,15 @@ def require_sub(request: Request, x_api_key: Annotated[str | None, Header()] = N
     sub = request.app.state.central.apikeys.authenticate(x_api_key)
     if sub is None:
         raise ApiError("UNAUTHORIZED", "API 키가 없거나 올바르지 않음")
+    tag_request(sub)
     return sub
+
+
+def tag_request(sub: SubAccount) -> None:
+    """이 요청을 앱별 사용량에 그 서브계좌 몫으로 센다 (central/core/appstats.py)."""
+    tag = appstats.current()
+    if tag is not None:
+        tag.sub_id = sub.id
 
 
 App = Annotated[CentralApp, Depends(central)]

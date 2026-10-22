@@ -200,7 +200,7 @@ def _default_layout(viewer: Viewer) -> dict:
     ]
     if viewer.role == "admin":
         pages.append({"id": "system", "title": "시스템", "widgets": [
-            {"type": "calls", "w": 12}, {"type": "programs", "w": 5}, {"type": "jobs", "w": 7},
+            {"type": "usage", "w": 12}, {"type": "calls", "w": 12}, {"type": "programs", "w": 5}, {"type": "jobs", "w": 7},
             {"type": "errors", "w": 12}]})
     return {"pages": pages}
 
@@ -751,6 +751,33 @@ def w_symbols(app: CentralApp, viewer: Viewer, params: dict) -> dict:
     return {"from": start_day, "to": end_day, "rows": rows}
 
 
+def w_usage(app: CentralApp, viewer: Viewer, params: dict) -> dict:
+    """앱별 API 사용량(최근 1시간)과 실시간 구독. KIS 호출은 그 앱 요청을 처리하다 실제로 나간 것만 센다."""
+    subs = _scope(app, viewer, params)
+    names = _sub_names(app)
+    ids = {s.id for s in subs}
+    stats = app.app_stats.snapshot(ids) if getattr(app, "app_stats", None) else {}
+    hub = app.ws_hub.snapshot() if getattr(app, "ws_hub", None) else {}
+    rows = []
+    for sid in sorted(ids & (set(stats) | set(hub))):
+        st, h = stats.get(sid, {}), hub.get(sid, {})
+        endpoints = sorted(({"name": k, **v} for k, v in st.get("endpoints", {}).items()),
+                           key=lambda e: e["requests"], reverse=True)
+        rows.append({"sub_id": sid, "name": names.get(sid, "?"), "requests": st.get("requests", 0),
+                     "kis_calls": st.get("kis_calls", 0), "errors": st.get("errors", 0),
+                     "elapsed_avg_ms": st.get("elapsed_avg_ms"),
+                     "last_at": datetime.fromtimestamp(st["last_at"], KST) if st.get("last_at") else None,
+                     "per_minute": st.get("per_minute", [0] * 60), "endpoints": endpoints,
+                     "ws_connections": h.get("connections", 0), "channels": h.get("channels", []),
+                     "ws_since": datetime.fromtimestamp(h["since"], KST) if h.get("since") else None})
+    out: dict[str, Any] = {"rows": rows}
+    if viewer.role == "admin":   # 앱 요청이 아닌 KIS 호출 (서버 자체 작업: 대사, 동기화, 일정 작업, 대시보드 차트 등)
+        total = sum((b.call_stats() or {}).get("windows", {}).get("60m", {}).get("calls", 0) for b in app.brokers.values())
+        out["kis_total_60m"] = total
+        out["kis_server_60m"] = max(0, total - sum(r["kis_calls"] for r in rows))
+    return out
+
+
 WIDGETS: dict[str, dict[str, Any]] = {
     "status": {"fn": w_status, "roles": ("admin", "sub"), "title": "상태", "refresh": 5,
                "params": {}},
@@ -770,6 +797,8 @@ WIDGETS: dict[str, dict[str, Any]] = {
                          "date": "YYYY-MM-DD", "days": "일봉 기간 (기본 120)", "sub": "서브계좌 id"}},
     "symbols": {"fn": w_symbols, "roles": ("admin", "sub"), "title": "종목별 매매", "refresh": 15,
                 "params": {"days": "기간 일수 (기본 1)", "date": "마지막 날", "sub": "서브계좌 id"}},
+    "usage": {"fn": w_usage, "roles": ("admin", "sub"), "title": "앱별 데이터 사용", "refresh": 10,
+              "params": {"sub": "서브계좌 id"}},
     "calls": {"fn": w_calls, "roles": ("admin",), "title": "KIS 호출", "refresh": 10, "params": {}},
     "errors": {"fn": w_errors, "roles": ("admin",), "title": "오류와 경고", "refresh": 15,
                "params": {"since": "today/start", "limit": "최근 목록 수 (기본 50)"}},

@@ -12,6 +12,7 @@ import httpx
 
 from central.broker.kis.auth import KisAuth
 from central.broker.kis.tr import REST_BASE, Tr
+from central.core import appstats
 from central.core.callstats import CallStats, classify
 
 log = logging.getLogger(__name__)
@@ -120,6 +121,7 @@ class KisRestClient:
             }
             queued = time.monotonic()
             await self.limiter.acquire()
+            appstats.count_kis_call()
             started = time.monotonic()
             wait_ms = (started - queued) * 1000
             try:

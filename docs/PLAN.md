@@ -540,6 +540,7 @@ async for tick in cs.stream("tick:US:AAPL"): ...
 - 페이지 `vars` (`sub`, `date`, `symbol`): 페이지 위에 선택 칸이 생기고 고른 값이 그 페이지 모든 위젯 조건으로 들어간다. 종목 이름을 누르면 종목 칸이 있는 페이지의 차트로 간다
 - `chart`: 분봉(1/5/15/30/60분, 그날 정규장) 또는 일봉에 체결 위치(매수 ▲, 매도 ▼)와 평균단가선. 봉은 `CandleService` 를 거치고, 화면 갱신이 주문과 같은 KIS 호출 한도를 먹지 않게 20초(지난 날은 10분) 캐시한다
 - 조회 전용. 실계좌는 별칭(paper/real)으로만 표시하고 계좌번호와 키는 내보내지 않는다
+- `usage` 위젯: 앱(API 키)별 요청 수, 요청 종류, 그 요청이 일으킨 KIS 호출 수, 실시간 구독 채널 (`central/core/appstats.py`, 요청마다 contextvar 태그)
 - KIS 호출 통계(`central/core/callstats.py`, 최근 1시간)와 WARNING 이상 로그(`central/core/logbuffer.py`, 마스킹 적용)는 메모리에만 두고 재시작 때 비운다
 - 앱이 보내는 맞춤 값(`cs.plot`, `cs.log`, `cs.state`)은 다음 단계
 
